@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   toBullets,
   parseActionItems,
@@ -22,16 +22,21 @@ import {
 } from "../lib/sessionStore";
 
 type AppView = "home" | "editor";
-type ViewMode = "action-items" | "summary" | "email";
-type GenerateChoice = "" | "selected" | "all";
+type ArtifactView = "past-outputs" | "email";
 
-function viewModeToKey(mode: ViewMode): "actionItems" | "summary" | "email" {
-  return mode === "action-items" ? "actionItems" : mode;
-}
+type EmailType =
+  | "follow-up"
+  | "status-update"
+  | "questions"
+  | "action-items-complete"
+  | "action-item-question"
+  | "concern";
 
-function formatDateShort(ts: number) {
+type EmailTone = "professional" | "warm" | "friendly-professional" | "casual";
+
+function formatDateTime(ts: number) {
   try {
-    return new Date(ts).toLocaleDateString();
+    return new Date(ts).toLocaleString();
   } catch {
     return "Unknown date";
   }
@@ -52,16 +57,48 @@ function autoTitleForSession(s: Session) {
   const firstLine = pickFirstNonEmptyLine(s.rawNotes);
   if (firstLine) return firstLine.slice(0, 60);
 
-  return `Meeting - ${formatDateShort(s.updatedAt)}`;
+  return `Meeting - ${new Date(s.updatedAt).toLocaleDateString()}`;
+}
+
+function titleCase(s: string) {
+  return s
+    .split(" ")
+    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
+    .join(" ");
+}
+
+function labelForEmailType(t: EmailType) {
+  switch (t) {
+    case "follow-up":
+      return "Follow Up";
+    case "status-update":
+      return "Status Update";
+    case "questions":
+      return "Questions";
+    case "action-items-complete":
+      return "Action Items Complete";
+    case "action-item-question":
+      return "Action Item Question";
+    case "concern":
+      return "Concern";
+  }
+}
+
+function labelForTone(t: EmailTone) {
+  switch (t) {
+    case "professional":
+      return "Professional";
+    case "warm":
+      return "Warm";
+    case "friendly-professional":
+      return "Friendly Professional";
+    case "casual":
+      return "Casual";
+  }
 }
 
 export default function Page() {
   const [appView, setAppView] = useState<AppView>("home");
-
-  const [viewMode, setViewMode] = useState<ViewMode>("action-items");
-  const [generateChoice, setGenerateChoice] = useState<GenerateChoice>("");
-
-  const [proMode, setProMode] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [storeReady, setStoreReady] = useState(false);
 
@@ -70,50 +107,24 @@ export default function Page() {
   const [activeSessionId, setActiveSessionId] = useState<string>("");
 
   const [sortMode, setSortMode] = useState<SortMode>("updated");
-  const [openFolderIds, setOpenFolderIds] = useState<Record<string, boolean>>(
-    {}
-  );
 
   const [isGenerating, setIsGenerating] = useState(false);
+  const [artifactView, setArtifactView] = useState<ArtifactView>("past-outputs");
 
-  // Pro mode help tooltip
-  const [showProHelp, setShowProHelp] = useState(false);
-  const proHelpRef = useRef<HTMLDivElement | null>(null);
-  const proHelpBtnRef = useRef<HTMLButtonElement | null>(null);
+  const [emailType, setEmailType] = useState<EmailType>("follow-up");
+  const [emailTone, setEmailTone] = useState<EmailTone>("friendly-professional");
 
   useEffect(() => {
     setMounted(true);
-    const saved = localStorage.getItem("proMode");
-    if (saved !== null) setProMode(saved !== "false");
   }, []);
 
-  useEffect(() => {
-    if (!mounted) return;
-    localStorage.setItem("proMode", String(proMode));
-  }, [proMode, mounted]);
-
-  useEffect(() => {
-    if (!showProHelp) return;
-
-    function onDown(e: MouseEvent) {
-      const target = e.target as Node;
-      if (proHelpRef.current?.contains(target)) return;
-      if (proHelpBtnRef.current?.contains(target)) return;
-      setShowProHelp(false);
-    }
-
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [showProHelp]);
-
-  // Load sessions/folders after mount
   useEffect(() => {
     if (!mounted) return;
 
     const loadedSessions = loadSessions();
     const loadedFolders = loadFolders();
 
-    // If brand new user, create one seed session but stay on Home
+    // Seed one session for brand new user
     if (loadedSessions.length === 0) {
       const s = createSession();
       const seed: Session = { ...s, title: "" };
@@ -126,11 +137,6 @@ export default function Page() {
     }
 
     setFolders(loadedFolders);
-
-    const initialOpen: Record<string, boolean> = {};
-    for (const f of loadedFolders) initialOpen[f.id] = true;
-    setOpenFolderIds(initialOpen);
-
     setStoreReady(true);
   }, [mounted]);
 
@@ -146,12 +152,6 @@ export default function Page() {
 
   const activeSession = sessions.find((s) => s.id === activeSessionId) || null;
 
-  const activeOutput = useMemo(() => {
-    if (!activeSession) return "";
-    const key = viewModeToKey(viewMode);
-    return activeSession.outputs[key];
-  }, [activeSession, viewMode]);
-
   const standaloneSessions = useMemo(() => {
     const list = sessions.filter((s) => s.folderId === null);
     return sortSessions(list, sortMode);
@@ -166,17 +166,34 @@ export default function Page() {
     return map;
   }, [folders, sessions, sortMode]);
 
+  const activeFolder = useMemo(() => {
+    if (!activeSession || activeSession.folderId === null) return null;
+    return folders.find((f) => f.id === activeSession.folderId) || null;
+  }, [activeSession, folders]);
+
+  const activeFolderSessions = useMemo(() => {
+    if (!activeSession || activeSession.folderId === null) return [];
+    return folderSessionsMap[activeSession.folderId] ?? [];
+  }, [activeSession, folderSessionsMap]);
+
   function updateSessionById(id: string, patch: Partial<Session>) {
     setSessions((prev) =>
-      prev.map((s) =>
-        s.id === id ? { ...s, ...patch, updatedAt: Date.now() } : s
-      )
+      prev.map((s) => (s.id === id ? { ...s, ...patch, updatedAt: Date.now() } : s))
     );
   }
 
   function openSession(id: string) {
     setActiveSessionId(id);
     setAppView("editor");
+  }
+
+  function ensureTitleOnBlur() {
+    if (!activeSession) return;
+    const trimmed = activeSession.title.trim();
+    if (trimmed) return;
+
+    const generated = autoTitleForSession(activeSession);
+    updateSessionById(activeSession.id, { title: generated });
   }
 
   function handleNewSingleSession() {
@@ -200,7 +217,6 @@ export default function Page() {
 
     const f = createFolder(name.trim());
     setFolders((prev) => [f, ...prev]);
-    setOpenFolderIds((prev) => ({ ...prev, [f.id]: true }));
   }
 
   function handleNewSessionInFolder(folderId: string) {
@@ -218,185 +234,211 @@ export default function Page() {
     openSession(newSession.id);
   }
 
-  function toggleFolder(folderId: string) {
-    setOpenFolderIds((prev) => ({ ...prev, [folderId]: !prev[folderId] }));
-  }
-
-  function ensureTitleOnBlur() {
-    if (!activeSession) return;
-    const trimmed = activeSession.title.trim();
-    if (trimmed) return;
-
-    const generated = autoTitleForSession(activeSession);
-    updateSessionById(activeSession.id, { title: generated });
-  }
-
   function moveActiveSessionToFolder(folderId: string) {
     if (!activeSession) return;
     updateSessionById(activeSession.id, { folderId });
   }
 
-  function handleGenerate(choice: GenerateChoice) {
+  function moveActiveSessionToStandalone() {
+    if (!activeSession) return;
+    updateSessionById(activeSession.id, { folderId: null });
+  }
+
+  function clearSessionContent() {
+    if (!activeSession) return;
+    updateSessionById(activeSession.id, {
+      objective: "",
+      rawNotes: "",
+      outputs: { actionItems: "", summary: "", email: "" },
+    });
+  }
+
+  function generatePastOutputs() {
     if (!activeSession) return;
 
     setIsGenerating(true);
 
-    // Clear outputs we are about to regenerate
+    // clear the two outputs we regenerate
     updateSessionById(activeSession.id, {
-      outputs:
-        choice === "all"
-          ? { actionItems: "", summary: "", email: "" }
-          : {
-              ...activeSession.outputs,
-              actionItems:
-                viewMode === "action-items" ? "" : activeSession.outputs.actionItems,
-              summary: viewMode === "summary" ? "" : activeSession.outputs.summary,
-              email: viewMode === "email" ? "" : activeSession.outputs.email,
-            },
+      outputs: { ...activeSession.outputs, summary: "", actionItems: "" },
     });
 
     setTimeout(() => {
       try {
         const bullets = toBullets(activeSession.rawNotes);
 
-        const setOutput = (
-          key: "actionItems" | "summary" | "email",
-          value: string
-        ) => {
-          // Use latest session value to avoid overwriting other fields
-          const latest =
-            sessions.find((s) => s.id === activeSession.id) || activeSession;
-          updateSessionById(activeSession.id, {
-            outputs: { ...latest.outputs, [key]: value },
-          });
-        };
-
-        const setAllOutputs = (out: {
-          actionItems: string;
-          summary: string;
-          email: string;
-        }) => {
-          updateSessionById(activeSession.id, { outputs: out });
-        };
-
         if (bullets.length === 0) {
           const msg =
             "No notes provided. Paste meeting notes into Raw Notes, then click Generate.";
-
-          if (choice === "all") {
-            setAllOutputs({ actionItems: msg, summary: msg, email: msg });
-          } else {
-            const key = viewModeToKey(viewMode);
-            setOutput(key, msg);
-          }
-
+          updateSessionById(activeSession.id, {
+            outputs: { ...activeSession.outputs, summary: msg, actionItems: msg },
+          });
           setIsGenerating(false);
           return;
         }
 
         const makeSummary = () => {
           const first = bullets[0] ?? "Meeting notes provided.";
-          const restCount = Math.max(0, bullets.length - 1);
+          const rest = bullets.slice(1);
+
+          if (rest.length === 0) return `Summary:\n\n${first}`;
 
           return (
             `Summary:\n\n${first}\n\nOther topics discussed:\n` +
-            bullets
-              .slice(1)
-              .map((b) => `- ${b}`)
-              .join("\n") +
-            `\n\n(${restCount} additional point${restCount === 1 ? "" : "s"})`
-          );
-        };
-
-        const makeEmail = () => {
-          const subject = "Follow-up from our meeting";
-          const bodyLines = bullets.slice(0, 6).map((b) => `- ${b}`);
-
-          return (
-            `Email Draft:\n` +
-            `Subject: ${subject}\n\n` +
-            `Hi,\n\n` +
-            `Here are the key points from our discussion:\n\n` +
-            bodyLines.join("\n") +
-            `\n\nLet me know if you have questions.\n\nThanks,`
+            rest.map((b) => `- ${b}`).join("\n")
           );
         };
 
         const makeActionItems = () => {
           const items = parseActionItems(bullets);
           const issues = detectActionIssues(items);
-          return formatActionItems(items, issues, proMode);
+          // Pro mode removed: 2-arg call
+          return formatActionItems(items, issues);
         };
 
-        if (choice === "all") {
-          setAllOutputs({
-            actionItems: makeActionItems(),
+        updateSessionById(activeSession.id, {
+          outputs: {
+            ...activeSession.outputs,
             summary: makeSummary(),
-            email: makeEmail(),
-          });
-          setIsGenerating(false);
-          return;
-        }
+            actionItems: makeActionItems(),
+          },
+        });
 
-        if (viewMode === "summary") {
-          setOutput("summary", makeSummary());
-          setIsGenerating(false);
-          return;
-        }
-
-        if (viewMode === "email") {
-          setOutput("email", makeEmail());
-          setIsGenerating(false);
-          return;
-        }
-
-        setOutput("actionItems", makeActionItems());
         setIsGenerating(false);
       } catch (e) {
         const out = `Error generating output: ${String(e)}`;
-
-        if (choice === "all") {
-          updateSessionById(activeSession.id, {
-            outputs: { actionItems: out, summary: out, email: out },
-          });
-        } else {
-          const key = viewModeToKey(viewMode);
-          const latest =
-            sessions.find((s) => s.id === activeSession.id) || activeSession;
-          updateSessionById(activeSession.id, {
-            outputs: { ...latest.outputs, [key]: out },
-          });
-        }
-
+        updateSessionById(activeSession.id, {
+          outputs: { ...activeSession.outputs, summary: out, actionItems: out },
+        });
         setIsGenerating(false);
       }
-    }, 400);
+    }, 250);
   }
 
-  /* -------------------- UI -------------------- */
+  function generateEmailDraft() {
+    if (!activeSession) return;
+
+    setIsGenerating(true);
+    updateSessionById(activeSession.id, {
+      outputs: { ...activeSession.outputs, email: "" },
+    });
+
+    setTimeout(() => {
+      try {
+        const bullets = toBullets(activeSession.rawNotes);
+
+        if (bullets.length === 0) {
+          const msg =
+            "No notes provided. Paste meeting notes into Raw Notes, then generate again.";
+          updateSessionById(activeSession.id, {
+            outputs: { ...activeSession.outputs, email: msg },
+          });
+          setIsGenerating(false);
+          return;
+        }
+
+        const subjectBase = (() => {
+          const sessionTitle = activeSession.title.trim() || "our meeting";
+          const type = labelForEmailType(emailType);
+          return `${type} - ${sessionTitle}`;
+        })();
+
+        const opening = (() => {
+          switch (emailTone) {
+            case "professional":
+              return "Hi,";
+            case "warm":
+              return "Hi there,";
+            case "friendly-professional":
+              return "Hi,";
+            case "casual":
+              return "Hey,";
+          }
+        })();
+
+        const closing = (() => {
+          switch (emailTone) {
+            case "professional":
+              return "Thanks,";
+            case "warm":
+              return "Thanks so much,";
+            case "friendly-professional":
+              return "Thanks,";
+            case "casual":
+              return "Cheers,";
+          }
+        })();
+
+        const keyPoints = bullets.slice(0, 6).map((b) => `- ${b}`).join("\n");
+
+        const summaryBlock =
+          activeSession.outputs.summary.trim() !== ""
+            ? `\n\nSummary:\n${activeSession.outputs.summary.replace(
+                /^Summary:\n\n?/,
+                ""
+              )}`
+            : "";
+
+        const actionItemsBlock =
+          activeSession.outputs.actionItems.trim() !== ""
+            ? `\n\nAction Items:\n${activeSession.outputs.actionItems.replace(
+                /^Action items $begin:math:text$\\d\+$end:math:text$:\n\n?/i,
+                ""
+              )}`
+            : "";
+
+        const bodyIntro = (() => {
+          switch (emailType) {
+            case "follow-up":
+              return "Following up with the key points from our meeting:";
+            case "status-update":
+              return "Here is a quick status update from our discussion:";
+            case "questions":
+              return "A few questions and clarifications from our discussion:";
+            case "action-items-complete":
+              return "Quick update: action items are complete. Details below:";
+            case "action-item-question":
+              return "I have a question on one of the action items:";
+            case "concern":
+              return "I wanted to flag a concern from our discussion:";
+          }
+        })();
+
+        const email =
+          `Email Draft:\n` +
+          `Subject: ${subjectBase}\n\n` +
+          `${opening}\n\n` +
+          `${bodyIntro}\n\n` +
+          `${keyPoints}` +
+          summaryBlock +
+          actionItemsBlock +
+          `\n\nLet me know if you want me to adjust anything.\n\n` +
+          `${closing}`;
+
+        updateSessionById(activeSession.id, {
+          outputs: { ...activeSession.outputs, email },
+        });
+
+        setIsGenerating(false);
+      } catch (e) {
+        const out = `Error generating email: ${String(e)}`;
+        updateSessionById(activeSession.id, {
+          outputs: { ...activeSession.outputs, email: out },
+        });
+        setIsGenerating(false);
+      }
+    }, 250);
+  }
 
   return (
     <main style={{ minHeight: "100vh", background: "#fff", color: "#111" }}>
-      <style jsx global>{`
-        @keyframes proHelpIn {
-          from {
-            opacity: 0;
-            transform: scale(0.96) translateY(-4px);
-          }
-          to {
-            opacity: 1;
-            transform: scale(1) translateY(0);
-          }
-        }
-      `}</style>
-
       {/* Header */}
       <header style={{ borderBottom: "1px solid #eee" }}>
         <div
           style={{
             maxWidth: 1200,
             margin: "0 auto",
-            padding: "20px 16px",
+            padding: "18px 16px",
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
@@ -404,54 +446,30 @@ export default function Page() {
           }}
         >
           <div>
-            <div style={{ fontSize: 34, fontWeight: 700 }}>RecapKit</div>
+            <div style={{ fontSize: 34, fontWeight: 800 }}>RecapKit</div>
             <div style={{ fontSize: 14, color: "#666", marginTop: 4 }}>
-              Meeting Notes → Recap → Action Items
+              Turning your meetings into actionable and accountable follow-ups.
             </div>
           </div>
 
-          {appView === "editor" && (
-            <div style={{ display: "flex", gap: 8 }}>
+          {appView === "editor" && activeSession && (
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ fontSize: 12, color: "#666" }}>
+                Session Mode:{" "}
+                <b>{titleCase(activeSession.mode.replace("-", " "))}</b>
+              </div>
               <button
-                onClick={() => setViewMode("action-items")}
+                onClick={() => setAppView("home")}
                 style={{
                   padding: "10px 12px",
                   borderRadius: 10,
                   border: "1px solid #ddd",
-                  background: viewMode === "action-items" ? "#111" : "#fff",
-                  color: viewMode === "action-items" ? "#fff" : "#111",
+                  background: "#fff",
                   cursor: "pointer",
+                  fontWeight: 800,
                 }}
               >
-                Action Items
-              </button>
-
-              <button
-                onClick={() => setViewMode("summary")}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 10,
-                  border: "1px solid #ddd",
-                  background: viewMode === "summary" ? "#111" : "#fff",
-                  color: viewMode === "summary" ? "#fff" : "#111",
-                  cursor: "pointer",
-                }}
-              >
-                Summary
-              </button>
-
-              <button
-                onClick={() => setViewMode("email")}
-                style={{
-                  padding: "10px 12px",
-                  borderRadius: 10,
-                  border: "1px solid #ddd",
-                  background: viewMode === "email" ? "#111" : "#fff",
-                  color: viewMode === "email" ? "#fff" : "#111",
-                  cursor: "pointer",
-                }}
-              >
-                Email
+                Home
               </button>
             </div>
           )}
@@ -461,7 +479,15 @@ export default function Page() {
       {/* Home */}
       {appView === "home" && (
         <div style={{ maxWidth: 1200, margin: "0 auto", padding: "18px 16px" }}>
-          <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 10,
+              marginBottom: 14,
+              flexWrap: "wrap",
+              alignItems: "center",
+            }}
+          >
             <button
               onClick={handleNewFile}
               style={{
@@ -470,7 +496,7 @@ export default function Page() {
                 border: "1px solid #ddd",
                 background: "#fff",
                 cursor: "pointer",
-                fontWeight: 700,
+                fontWeight: 800,
               }}
             >
               New File
@@ -485,7 +511,7 @@ export default function Page() {
                 background: "#111",
                 color: "#fff",
                 cursor: "pointer",
-                fontWeight: 700,
+                fontWeight: 800,
               }}
             >
               New Single Session
@@ -515,79 +541,98 @@ export default function Page() {
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
             {/* Files */}
             <section style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
-              <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 10 }}>
+              <div style={{ fontSize: 14, fontWeight: 900, marginBottom: 10 }}>
                 Files
               </div>
 
-              {folders.length === 0 && (
+              {folders.length === 0 ? (
                 <div style={{ fontSize: 12, color: "#777" }}>
                   No files yet. Click "New File" to create one.
                 </div>
-              )}
-
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {folders.map((f) => {
-                  const list = folderSessionsMap[f.id] ?? [];
-                  return (
-                    <div
-                      key={f.id}
-                      style={{ border: "1px solid #eee", borderRadius: 10, padding: 10 }}
-                    >
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                        <div style={{ fontWeight: 800 }}>{f.name}</div>
-                        <button
-                          onClick={() => handleNewSessionInFolder(f.id)}
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {folders.map((f) => {
+                    const list = folderSessionsMap[f.id] ?? [];
+                    return (
+                      <div
+                        key={f.id}
+                        style={{
+                          border: "1px solid #eee",
+                          borderRadius: 10,
+                          padding: 10,
+                        }}
+                      >
+                        <div
                           style={{
-                            border: "1px solid #ddd",
-                            background: "#fff",
-                            borderRadius: 8,
-                            padding: "6px 8px",
-                            cursor: "pointer",
-                            fontSize: 12,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            gap: 8,
                           }}
                         >
-                          + Session
-                        </button>
-                      </div>
+                          <div style={{ fontWeight: 900 }}>{f.name}</div>
+                          <button
+                            onClick={() => handleNewSessionInFolder(f.id)}
+                            style={{
+                              border: "1px solid #ddd",
+                              background: "#fff",
+                              borderRadius: 8,
+                              padding: "6px 8px",
+                              cursor: "pointer",
+                              fontSize: 12,
+                              fontWeight: 800,
+                            }}
+                          >
+                            + Session
+                          </button>
+                        </div>
 
-                      <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
-                        {list.length === 0 ? (
-                          <div style={{ fontSize: 12, color: "#777" }}>
-                            No sessions in this file yet.
-                          </div>
-                        ) : (
-                          list.slice(0, 4).map((s) => (
-                            <button
-                              key={s.id}
-                              onClick={() => openSession(s.id)}
-                              style={{
-                                textAlign: "left",
-                                padding: "10px 10px",
-                                borderRadius: 10,
-                                border: "1px solid #ddd",
-                                background: "#fff",
-                                cursor: "pointer",
-                              }}
-                            >
-                              <div style={{ fontWeight: 800, fontSize: 13 }}>
-                                {s.title.trim() ? s.title : "(Untitled Session)"}
-                              </div>
-                              <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>
-                                {new Date(s.updatedAt).toLocaleString()}
-                              </div>
-                            </button>
-                          ))
-                        )}
+                        <div
+                          style={{
+                            marginTop: 10,
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 8,
+                          }}
+                        >
+                          {list.length === 0 ? (
+                            <div style={{ fontSize: 12, color: "#777" }}>
+                              No sessions in this file yet.
+                            </div>
+                          ) : (
+                            list.slice(0, 5).map((s) => (
+                              <button
+                                key={s.id}
+                                onClick={() => openSession(s.id)}
+                                style={{
+                                  textAlign: "left",
+                                  padding: "10px 10px",
+                                  borderRadius: 10,
+                                  border: "1px solid #ddd",
+                                  background: "#fff",
+                                  cursor: "pointer",
+                                }}
+                              >
+                                <div style={{ fontWeight: 900, fontSize: 13 }}>
+                                  {s.title.trim() ? s.title : "(Untitled Session)"}
+                                </div>
+                                <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>
+                                  {formatDateTime(s.updatedAt)}
+                                </div>
+                              </button>
+                            ))
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
+              )}
             </section>
 
             {/* Single Sessions */}
             <section style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
-              <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 10 }}>
+              <div style={{ fontSize: 14, fontWeight: 900, marginBottom: 10 }}>
                 Single Sessions
               </div>
 
@@ -596,25 +641,25 @@ export default function Page() {
                   No single sessions yet. Click "New Single Session".
                 </div>
               ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                   {standaloneSessions.map((s) => (
                     <button
                       key={s.id}
                       onClick={() => openSession(s.id)}
                       style={{
                         textAlign: "left",
-                        padding: "10px 10px",
-                        borderRadius: 10,
+                        padding: "12px 12px",
+                        borderRadius: 12,
                         border: "1px solid #ddd",
                         background: "#fff",
                         cursor: "pointer",
                       }}
                     >
-                      <div style={{ fontWeight: 800, fontSize: 13 }}>
+                      <div style={{ fontWeight: 900, fontSize: 14 }}>
                         {s.title.trim() ? s.title : "(Untitled Session)"}
                       </div>
                       <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>
-                        {new Date(s.updatedAt).toLocaleString()}
+                        {formatDateTime(s.updatedAt)}
                       </div>
                     </button>
                   ))}
@@ -631,12 +676,12 @@ export default function Page() {
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "280px 1fr 1fr",
+              gridTemplateColumns: "300px 1fr 1fr",
               gap: 14,
               alignItems: "start",
             }}
           >
-            {/* Sidebar */}
+            {/* Left Sidebar */}
             <aside
               style={{
                 border: "1px solid #eee",
@@ -645,302 +690,248 @@ export default function Page() {
                 background: "#fafafa",
                 position: "sticky",
                 top: 16,
-                maxHeight: "calc(100vh - 120px)",
+                maxHeight: "calc(100vh - 110px)",
                 overflowY: "auto",
               }}
             >
-              <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-                <button
-                  onClick={() => setAppView("home")}
-                  style={{
-                    padding: "10px 12px",
-                    borderRadius: 10,
-                    border: "1px solid #ddd",
-                    background: "#fff",
-                    cursor: "pointer",
-                    fontWeight: 800,
-                  }}
-                >
-                  Back
-                </button>
+              {!activeSession ? (
+                <div style={{ color: "#777" }}>No session selected.</div>
+              ) : activeSession.folderId ? (
+                <>
+                  <div style={{ fontSize: 12, fontWeight: 900, color: "#444" }}>
+                    File
+                  </div>
+                  <div style={{ fontSize: 14, fontWeight: 900, marginTop: 4 }}>
+                    {activeFolder?.name ?? "Unknown File"}
+                  </div>
 
-                <button
-                  onClick={handleNewSingleSession}
-                  style={{
-                    flex: 1,
-                    padding: "10px 12px",
-                    borderRadius: 10,
-                    border: "1px solid #111",
-                    background: "#111",
-                    color: "#fff",
-                    fontWeight: 800,
-                    cursor: "pointer",
-                  }}
-                >
-                  New Session
-                </button>
-              </div>
+                  <button
+                    onClick={() => handleNewSessionInFolder(activeSession.folderId as string)}
+                    style={{
+                      width: "100%",
+                      marginTop: 10,
+                      padding: "10px 12px",
+                      borderRadius: 10,
+                      border: "1px solid #111",
+                      background: "#111",
+                      color: "#fff",
+                      fontWeight: 900,
+                      cursor: "pointer",
+                    }}
+                  >
+                    + New Session
+                  </button>
 
-              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }}>
-                <div style={{ fontSize: 12, color: "#666", whiteSpace: "nowrap" }}>Sort</div>
-                <select
-                  value={sortMode}
-                  onChange={(e) => setSortMode(e.target.value as SortMode)}
-                  style={{
-                    flex: 1,
-                    padding: "8px 10px",
-                    borderRadius: 10,
-                    border: "1px solid #ddd",
-                    background: "#fff",
-                    color: "#111",
-                  }}
-                >
-                  <option value="updated">Date Modified</option>
-                  <option value="alpha">Alphabetical</option>
-                </select>
-              </div>
+                  <div style={{ marginTop: 14, fontSize: 12, fontWeight: 900, color: "#444" }}>
+                    Sessions In This File
+                  </div>
 
-              <div style={{ fontSize: 12, fontWeight: 800, color: "#444", marginBottom: 8 }}>
-                Standalone
-              </div>
-
-              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 14 }}>
-                {standaloneSessions.map((s) => {
-                  const isActive = s.id === activeSessionId;
-                  return (
-                    <button
-                      key={s.id}
-                      onClick={() => openSession(s.id)}
-                      style={{
-                        textAlign: "left",
-                        padding: "10px 10px",
-                        borderRadius: 10,
-                        border: "1px solid #ddd",
-                        background: isActive ? "#111" : "#fff",
-                        color: isActive ? "#fff" : "#111",
-                        cursor: "pointer",
-                        lineHeight: 1.2,
-                      }}
-                    >
-                      <div style={{ fontWeight: 800, fontSize: 13 }}>
-                        {s.title.trim() ? s.title : "(Untitled Session)"}
-                      </div>
-                      <div style={{ fontSize: 11, opacity: isActive ? 0.8 : 0.6, marginTop: 4 }}>
-                        {new Date(s.updatedAt).toLocaleString()}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div style={{ fontSize: 12, fontWeight: 800, color: "#444", marginBottom: 8 }}>
-                Files
-              </div>
-
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {folders.map((f) => {
-                  const isOpen = openFolderIds[f.id] ?? false;
-                  const list = folderSessionsMap[f.id] ?? [];
-
-                  return (
-                    <div key={f.id} style={{ border: "1px solid #eee", borderRadius: 10, background: "#fff" }}>
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "space-between",
-                          gap: 8,
-                          padding: "10px 10px",
-                        }}
-                      >
+                  <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
+                    {activeFolderSessions.map((s) => {
+                      const isActive = s.id === activeSessionId;
+                      return (
                         <button
-                          onClick={() => toggleFolder(f.id)}
+                          key={s.id}
+                          onClick={() => openSession(s.id)}
                           style={{
-                            border: "none",
-                            background: "transparent",
-                            cursor: "pointer",
-                            fontWeight: 800,
-                            fontSize: 13,
-                            padding: 0,
                             textAlign: "left",
-                            flex: 1,
-                          }}
-                        >
-                          {isOpen ? "▾" : "▸"} {f.name}
-                        </button>
-
-                        <button
-                          onClick={() => handleNewSessionInFolder(f.id)}
-                          style={{
+                            padding: "10px 10px",
+                            borderRadius: 10,
                             border: "1px solid #ddd",
-                            background: "#fff",
-                            borderRadius: 8,
-                            padding: "6px 8px",
+                            background: isActive ? "#111" : "#fff",
+                            color: isActive ? "#fff" : "#111",
                             cursor: "pointer",
-                            fontSize: 12,
                           }}
                         >
-                          + Session
+                          <div style={{ fontWeight: 900, fontSize: 13 }}>
+                            {s.title.trim() ? s.title : "(Untitled Session)"}
+                          </div>
+                          <div style={{ fontSize: 11, opacity: isActive ? 0.8 : 0.6, marginTop: 4 }}>
+                            {formatDateTime(s.updatedAt)}
+                          </div>
                         </button>
-                      </div>
+                      );
+                    })}
+                  </div>
 
-                      {isOpen && (
-                        <div style={{ padding: "0 10px 10px", display: "flex", flexDirection: "column", gap: 6 }}>
-                          {list.map((s) => {
-                            const isActive = s.id === activeSessionId;
-                            return (
-                              <button
-                                key={s.id}
-                                onClick={() => openSession(s.id)}
-                                style={{
-                                  textAlign: "left",
-                                  padding: "10px 10px",
-                                  borderRadius: 10,
-                                  border: "1px solid #ddd",
-                                  background: isActive ? "#111" : "#fff",
-                                  color: isActive ? "#fff" : "#111",
-                                  cursor: "pointer",
-                                  lineHeight: 1.2,
-                                }}
-                              >
-                                <div style={{ fontWeight: 800, fontSize: 13 }}>
-                                  {s.title.trim() ? s.title : "(Untitled Session)"}
-                                </div>
-                                <div style={{ fontSize: 11, opacity: isActive ? 0.8 : 0.6, marginTop: 4 }}>
-                                  {new Date(s.updatedAt).toLocaleString()}
-                                </div>
-                              </button>
-                            );
-                          })}
+                  <button
+                    onClick={moveActiveSessionToStandalone}
+                    style={{
+                      width: "100%",
+                      marginTop: 12,
+                      padding: "10px 12px",
+                      borderRadius: 10,
+                      border: "1px solid #ddd",
+                      background: "#fff",
+                      cursor: "pointer",
+                      fontWeight: 900,
+                    }}
+                  >
+                    Move To Standalone
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div style={{ fontSize: 12, fontWeight: 900, color: "#444" }}>
+                    Standalone Sessions
+                  </div>
 
-                          {list.length === 0 && (
-                            <div style={{ fontSize: 12, color: "#777", paddingBottom: 6 }}>
-                              No sessions in this file.
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+                  <button
+                    onClick={handleNewSingleSession}
+                    style={{
+                      width: "100%",
+                      marginTop: 10,
+                      padding: "10px 12px",
+                      borderRadius: 10,
+                      border: "1px solid #111",
+                      background: "#111",
+                      color: "#fff",
+                      fontWeight: 900,
+                      cursor: "pointer",
+                    }}
+                  >
+                    + New Standalone Session
+                  </button>
 
-                <button
-                  onClick={handleNewFile}
-                  style={{
-                    marginTop: 8,
-                    padding: "10px 12px",
-                    borderRadius: 10,
-                    border: "1px solid #ddd",
-                    background: "#fff",
-                    cursor: "pointer",
-                    fontWeight: 800,
-                  }}
-                >
-                  + New File
-                </button>
-              </div>
+                  <div style={{ marginTop: 14, fontSize: 12, fontWeight: 900, color: "#444" }}>
+                    Other Standalone Sessions
+                  </div>
+
+                  <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
+                    {standaloneSessions.map((s) => {
+                      const isActive = s.id === activeSessionId;
+                      return (
+                        <button
+                          key={s.id}
+                          onClick={() => openSession(s.id)}
+                          style={{
+                            textAlign: "left",
+                            padding: "10px 10px",
+                            borderRadius: 10,
+                            border: "1px solid #ddd",
+                            background: isActive ? "#111" : "#fff",
+                            color: isActive ? "#fff" : "#111",
+                            cursor: "pointer",
+                          }}
+                        >
+                          <div style={{ fontWeight: 900, fontSize: 13 }}>
+                            {s.title.trim() ? s.title : "(Untitled Session)"}
+                          </div>
+                          <div style={{ fontSize: 11, opacity: isActive ? 0.8 : 0.6, marginTop: 4 }}>
+                            {formatDateTime(s.updatedAt)}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
             </aside>
 
-            {/* Middle: input */}
+            {/* Middle: Notes */}
             <section>
               {!activeSession ? (
                 <div style={{ color: "#777" }}>No session selected.</div>
               ) : (
                 <>
-                  {/* Session Title + File controls */}
-                  <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                     <input
                       value={activeSession.title}
-                      onChange={(e) => updateSessionById(activeSession.id, { title: e.target.value })}
+                      onChange={(e) =>
+                        updateSessionById(activeSession.id, { title: e.target.value })
+                      }
                       onBlur={ensureTitleOnBlur}
                       placeholder="Enter Name For Session"
                       style={{
                         flex: 1,
-                        minWidth: 220,
+                        minWidth: 240,
                         borderRadius: 12,
                         border: "1px solid #ddd",
                         padding: 12,
                         fontSize: 14,
-                        fontWeight: 800,
+                        fontWeight: 900,
                       }}
                     />
 
-                    {activeSession.folderId === null && folders.length > 0 && (
-                      <select
-                        value=""
-                        onChange={(e) => {
-                          const folderId = e.target.value;
-                          if (!folderId) return;
-                          moveActiveSessionToFolder(folderId);
-                        }}
-                        style={{
-                          padding: "10px 12px",
-                          borderRadius: 10,
-                          border: "1px solid #ddd",
-                          background: "#fff",
-                          color: "#111",
-                          cursor: "pointer",
-                        }}
-                      >
-                        <option value="" disabled>
-                          Add To File
-                        </option>
-                        {folders.map((f) => (
-                          <option key={f.id} value={f.id}>
-                            {f.name}
-                          </option>
-                        ))}
-                      </select>
+                    {activeSession.folderId === null && (
+                      <>
+                        {folders.length > 0 ? (
+                          <select
+                            value=""
+                            onChange={(e) => {
+                              const folderId = e.target.value;
+                              if (!folderId) return;
+                              moveActiveSessionToFolder(folderId);
+                            }}
+                            style={{
+                              padding: "10px 12px",
+                              borderRadius: 10,
+                              border: "1px solid #ddd",
+                              background: "#fff",
+                              color: "#111",
+                              cursor: "pointer",
+                              fontWeight: 800,
+                            }}
+                          >
+                            <option value="" disabled>
+                              Add To File
+                            </option>
+                            {folders.map((f) => (
+                              <option key={f.id} value={f.id}>
+                                {f.name}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <button
+                            onClick={handleNewFile}
+                            style={{
+                              padding: "10px 12px",
+                              borderRadius: 10,
+                              border: "1px solid #ddd",
+                              background: "#fff",
+                              cursor: "pointer",
+                              fontWeight: 900,
+                            }}
+                          >
+                            Create File
+                          </button>
+                        )}
+                      </>
                     )}
-
-                    {activeSession.folderId === null && folders.length === 0 && (
-                      <button
-                        onClick={handleNewFile}
-                        style={{
-                          padding: "10px 12px",
-                          borderRadius: 10,
-                          border: "1px solid #ddd",
-                          background: "#fff",
-                          cursor: "pointer",
-                          fontWeight: 800,
-                        }}
-                      >
-                        Create File
-                      </button>
-                    )}
-
-                    <div style={{ fontSize: 12, color: "#666", whiteSpace: "nowrap" }}>
-                      Session Mode: <b>{activeSession.mode}</b>
-                    </div>
                   </div>
 
-                  {/* Objective (global feature slot) */}
                   <input
                     value={activeSession.objective}
-                    onChange={(e) => updateSessionById(activeSession.id, { objective: e.target.value })}
+                    onChange={(e) =>
+                      updateSessionById(activeSession.id, { objective: e.target.value })
+                    }
                     placeholder="Meeting Objective (optional)"
                     style={{
                       width: "100%",
+                      marginTop: 10,
                       borderRadius: 12,
                       border: "1px solid #ddd",
                       padding: 12,
                       fontSize: 13,
-                      marginBottom: 10,
                     }}
                   />
 
-                  <div style={{ fontSize: 14, fontWeight: 800, color: "#444", marginBottom: 6 }}>
+                  <div style={{ marginTop: 10, fontSize: 14, fontWeight: 900, color: "#444" }}>
                     Raw Notes
                   </div>
 
                   <textarea
                     suppressHydrationWarning
                     value={activeSession.rawNotes}
-                    onChange={(e) => updateSessionById(activeSession.id, { rawNotes: e.target.value })}
+                    onChange={(e) =>
+                      updateSessionById(activeSession.id, { rawNotes: e.target.value })
+                    }
                     placeholder="Paste your meeting notes here..."
                     style={{
                       width: "100%",
-                      minHeight: 260,
+                      minHeight: 380,
+                      marginTop: 8,
                       borderRadius: 12,
                       border: "1px solid #ddd",
                       padding: 12,
@@ -950,57 +941,57 @@ export default function Page() {
                     }}
                   />
 
-                  <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 12, flexWrap: "wrap" }}>
-                    {/* Generate */}
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 10,
+                      alignItems: "center",
+                      marginTop: 12,
+                      flexWrap: "wrap",
+                    }}
+                  >
                     <button
-                      onClick={() => handleGenerate(generateChoice)}
-                      disabled={
-                        !activeSession.rawNotes.trim() || isGenerating || !generateChoice
-                      }
+                      onClick={() => {
+                        setArtifactView("past-outputs");
+                        generatePastOutputs();
+                      }}
+                      disabled={!activeSession.rawNotes.trim() || isGenerating}
                       style={{
                         padding: "10px 14px",
                         borderRadius: 10,
                         border: "1px solid #111",
                         background: "#111",
                         color: "#fff",
-                        fontWeight: 800,
-                        opacity: activeSession.rawNotes.trim() && generateChoice ? 1 : 0.4,
-                        cursor: activeSession.rawNotes.trim() && generateChoice ? "pointer" : "not-allowed",
+                        fontWeight: 900,
+                        opacity: activeSession.rawNotes.trim() ? 1 : 0.4,
+                        cursor: activeSession.rawNotes.trim() ? "pointer" : "not-allowed",
                       }}
                     >
-                      {isGenerating ? "Generating..." : "Generate"}
+                      {isGenerating ? "Generating..." : "Generate Summary + Action Items"}
                     </button>
 
-                    {/* Generate options */}
-                    <select
-                      value={generateChoice}
-                      onChange={(e) => setGenerateChoice(e.target.value as GenerateChoice)}
-                      disabled={isGenerating}
+                    <button
+                      onClick={() => {
+                        setArtifactView("email");
+                        generateEmailDraft();
+                      }}
+                      disabled={!activeSession.rawNotes.trim() || isGenerating}
                       style={{
-                        padding: "10px 12px",
+                        padding: "10px 14px",
                         borderRadius: 10,
                         border: "1px solid #ddd",
                         background: "#fff",
                         color: "#111",
-                        cursor: isGenerating ? "not-allowed" : "pointer",
+                        fontWeight: 900,
+                        cursor: activeSession.rawNotes.trim() ? "pointer" : "not-allowed",
+                        opacity: activeSession.rawNotes.trim() ? 1 : 0.4,
                       }}
                     >
-                      <option value="" disabled>
-                        Select Generate Options
-                      </option>
-                      <option value="all">Generate All Modes</option>
-                      <option value="selected">Generate Selected Mode Only</option>
-                    </select>
+                      Generate Email Draft
+                    </button>
 
-                    {/* Clear */}
                     <button
-                      onClick={() => {
-                        updateSessionById(activeSession.id, {
-                          rawNotes: "",
-                          objective: "",
-                          outputs: { actionItems: "", summary: "", email: "" },
-                        });
-                      }}
+                      onClick={clearSessionContent}
                       style={{
                         padding: "10px 14px",
                         borderRadius: 10,
@@ -1008,145 +999,174 @@ export default function Page() {
                         background: "#fff",
                         color: "#111",
                         cursor: "pointer",
-                        fontWeight: 800,
+                        fontWeight: 900,
                       }}
                     >
                       Clear
                     </button>
+                  </div>
 
-                    {/* Pro mode + help */}
-                    <label
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 6,
-                        marginLeft: 12,
-                        fontSize: 12,
-                        color: proMode ? "#666" : "#999",
-                        cursor: "pointer",
-                        position: "relative",
-                        userSelect: "none",
-                        fontWeight: 800,
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={mounted ? proMode : false}
-                        onChange={(e) => setProMode(e.target.checked)}
-                      />
-
-                      <span>Pro Mode</span>
-
-                      <button
-                        ref={proHelpBtnRef}
-                        type="button"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setShowProHelp((v) => !v);
-                        }}
-                        aria-label="What is Pro mode?"
-                        style={{
-                          width: 16,
-                          height: 16,
-                          borderRadius: 999,
-                          border: "1px solid #bbb",
-                          background: "#fff",
-                          color: "#666",
-                          display: "inline-flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          fontSize: 11,
-                          lineHeight: "16px",
-                          padding: 0,
-                          cursor: "pointer",
-                          fontWeight: 800,
-                        }}
-                      >
-                        ?
-                      </button>
-
-                      {showProHelp && (
-                        <div
-                          ref={proHelpRef}
-                          style={{
-                            position: "absolute",
-                            top: "100%",
-                            left: 0,
-                            marginTop: 6,
-                            background: "#fff7cc",
-                            border: "1px solid #e6d38a",
-                            borderRadius: 8,
-                            padding: "10px 12px",
-                            fontSize: 12,
-                            lineHeight: 1.4,
-                            width: 260,
-                            boxShadow: "0 6px 14px rgba(0,0,0,0.12)",
-                            zIndex: 10,
-                            transformOrigin: "top left",
-                            animation: "proHelpIn 140ms ease-out",
-                            fontWeight: 600,
-                          }}
-                        >
-                          <div style={{ fontWeight: 900, marginBottom: 6 }}>
-                            Pro Mode = Review + Cleanup Hints
-                          </div>
-
-                          <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
-                            <li>
-                              <b>Shows flags</b> beside action items (missing owner, missing date, vague wording)
-                            </li>
-                            <li>
-                              Adds a <b>Checks</b> section at the bottom that summarizes what might need fixing
-                            </li>
-                            <li>
-                              Best when you’re <b>still refining</b> notes before sharing
-                            </li>
-                          </ul>
-
-                          <div style={{ marginTop: 8, opacity: 0.85 }}>
-                            Turn it off when you want a <b>clean final output</b> with just the action items.
-                          </div>
-                        </div>
-                      )}
-                    </label>
-
-                    <div style={{ fontSize: 12, color: "#666", whiteSpace: "nowrap", fontWeight: 800 }}>
-                      View:{" "}
-                      <b>
-                        {viewMode === "action-items"
-                          ? "Action Items"
-                          : viewMode === "email"
-                          ? "Email"
-                          : "Summary"}
-                      </b>
-                    </div>
+                  <div style={{ marginTop: 10, fontSize: 12, color: "#666" }}>
+                    Tip: This is still using local generation. Real OpenAI integration comes after
+                    the UI and session model are stable.
                   </div>
                 </>
               )}
             </section>
 
-            {/* Right: output */}
-            <section>
-              <div style={{ fontSize: 14, fontWeight: 800, color: "#444", marginBottom: 6 }}>
-                Output
+            {/* Right: Output */}
+            <section
+              style={{
+                border: "1px solid #eee",
+                borderRadius: 12,
+                padding: 12,
+                background: "#fff",
+                position: "sticky",
+                top: 16,
+                maxHeight: "calc(100vh - 110px)",
+                overflowY: "auto",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                <div style={{ fontSize: 14, fontWeight: 900 }}>Output</div>
+
+                <select
+                  value={artifactView}
+                  onChange={(e) => setArtifactView(e.target.value as ArtifactView)}
+                  style={{
+                    padding: "8px 10px",
+                    borderRadius: 10,
+                    border: "1px solid #ddd",
+                    background: "#fff",
+                    fontWeight: 800,
+                  }}
+                >
+                  <option value="past-outputs">Summary + Action Items</option>
+                  <option value="email">Email Draft</option>
+                </select>
               </div>
 
-              <div
-                style={{
-                  width: "100%",
-                  minHeight: 260,
-                  borderRadius: 12,
-                  border: "1px solid #ddd",
-                  padding: 12,
-                  fontSize: 14,
-                  lineHeight: 1.5,
-                  whiteSpace: "pre-line",
-                  background: "#fafafa",
-                }}
-              >
-                {activeOutput ? activeOutput : "Click Generate to see results here."}
-              </div>
+              {!activeSession ? (
+                <div style={{ marginTop: 10, color: "#777" }}>No session selected.</div>
+              ) : artifactView === "past-outputs" ? (
+                <>
+                  <div style={{ marginTop: 12, fontSize: 13, fontWeight: 900, color: "#444" }}>
+                    Summary
+                  </div>
+                  <pre
+                    style={{
+                      marginTop: 8,
+                      padding: 12,
+                      borderRadius: 12,
+                      border: "1px solid #eee",
+                      background: "#fafafa",
+                      whiteSpace: "pre-wrap",
+                      fontSize: 13,
+                      lineHeight: 1.45,
+                      minHeight: 120,
+                    }}
+                  >
+                    {activeSession.outputs.summary?.trim()
+                      ? activeSession.outputs.summary
+                      : "Click Generate Summary + Action Items to see results here."}
+                  </pre>
+
+                  <div style={{ marginTop: 12, fontSize: 13, fontWeight: 900, color: "#444" }}>
+                    Action Items
+                  </div>
+                  <pre
+                    style={{
+                      marginTop: 8,
+                      padding: 12,
+                      borderRadius: 12,
+                      border: "1px solid #eee",
+                      background: "#fafafa",
+                      whiteSpace: "pre-wrap",
+                      fontSize: 13,
+                      lineHeight: 1.45,
+                      minHeight: 160,
+                    }}
+                  >
+                    {activeSession.outputs.actionItems?.trim()
+                      ? activeSession.outputs.actionItems
+                      : "Click Generate Summary + Action Items to see results here."}
+                  </pre>
+                </>
+              ) : (
+                <>
+                  <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      <div style={{ fontSize: 12, fontWeight: 900, color: "#444" }}>
+                        Email Type
+                      </div>
+                      <select
+                        value={emailType}
+                        onChange={(e) => setEmailType(e.target.value as EmailType)}
+                        style={{
+                          padding: "10px 12px",
+                          borderRadius: 10,
+                          border: "1px solid #ddd",
+                          background: "#fff",
+                          fontWeight: 800,
+                        }}
+                      >
+                        <option value="follow-up">{labelForEmailType("follow-up")}</option>
+                        <option value="status-update">{labelForEmailType("status-update")}</option>
+                        <option value="questions">{labelForEmailType("questions")}</option>
+                        <option value="action-items-complete">
+                          {labelForEmailType("action-items-complete")}
+                        </option>
+                        <option value="action-item-question">
+                          {labelForEmailType("action-item-question")}
+                        </option>
+                        <option value="concern">{labelForEmailType("concern")}</option>
+                      </select>
+                    </div>
+
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      <div style={{ fontSize: 12, fontWeight: 900, color: "#444" }}>
+                        Tone
+                      </div>
+                      <select
+                        value={emailTone}
+                        onChange={(e) => setEmailTone(e.target.value as EmailTone)}
+                        style={{
+                          padding: "10px 12px",
+                          borderRadius: 10,
+                          border: "1px solid #ddd",
+                          background: "#fff",
+                          fontWeight: 800,
+                        }}
+                      >
+                        <option value="professional">{labelForTone("professional")}</option>
+                        <option value="warm">{labelForTone("warm")}</option>
+                        <option value="friendly-professional">
+                          {labelForTone("friendly-professional")}
+                        </option>
+                        <option value="casual">{labelForTone("casual")}</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <pre
+                    style={{
+                      marginTop: 12,
+                      padding: 12,
+                      borderRadius: 12,
+                      border: "1px solid #eee",
+                      background: "#fafafa",
+                      whiteSpace: "pre-wrap",
+                      fontSize: 13,
+                      lineHeight: 1.45,
+                      minHeight: 360,
+                    }}
+                  >
+                    {activeSession.outputs.email?.trim()
+                      ? activeSession.outputs.email
+                      : "Click Generate Email Draft to see results here."}
+                  </pre>
+                </>
+              )}
             </section>
           </div>
         </div>

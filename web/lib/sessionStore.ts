@@ -51,13 +51,17 @@ export function saveSessions(sessions: Session[]) {
   localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
 }
 
+/**
+ * Default new sessions to CURRENT.
+ * This matches the product direction: you start in Current, then end meeting to Past.
+ */
 export function createSession(): Session {
   const now = Date.now();
   return {
     id: generateId(),
     title: "Untitled Meeting",
     folderId: null,
-    mode: "past",
+    mode: "current",
     objective: "",
     rawNotes: "",
     outputs: { actionItems: "", summary: "", email: "" },
@@ -66,12 +70,23 @@ export function createSession(): Session {
   };
 }
 
-export function updateSession(
-  sessions: Session[],
-  updated: Session
-): Session[] {
+export function updateSession(sessions: Session[], updated: Session): Session[] {
   return sessions.map((s) =>
     s.id === updated.id ? { ...updated, updatedAt: Date.now() } : s
+  );
+}
+
+export function deleteSession(sessions: Session[], sessionId: string): Session[] {
+  return sessions.filter((s) => s.id !== sessionId);
+}
+
+export function moveSessionToFolder(
+  sessions: Session[],
+  sessionId: string,
+  folderId: string | null
+): Session[] {
+  return sessions.map((s) =>
+    s.id === sessionId ? { ...s, folderId, updatedAt: Date.now() } : s
   );
 }
 
@@ -106,10 +121,7 @@ export function createFolder(name: string): Folder {
 
 export type SortMode = "updated" | "alpha";
 
-export function sortSessions(
-  sessions: Session[],
-  sortMode: SortMode
-): Session[] {
+export function sortSessions(sessions: Session[], sortMode: SortMode): Session[] {
   const copy = [...sessions];
 
   if (sortMode === "alpha") {

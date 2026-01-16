@@ -81,7 +81,10 @@ export function parseActionItems(bullets: string[]): ActionItem[] {
 
     if (!looksLikeAction) continue;
 
-    const cleaned = text.replace(/^[-•]\s*/, "").replace(/^action:\s*/i, "").trim();
+    const cleaned = text
+      .replace(/^[-•]\s*/, "")
+      .replace(/^action:\s*/i, "")
+      .trim();
 
     const ownerMatch = cleaned.match(ownerPattern);
     const owner = ownerMatch?.[1];
@@ -142,30 +145,36 @@ export function detectActionIssues(items: ActionItem[]) {
   return { missingOwners, missingDue, weak, missingVerb };
 }
 
+/**
+ * Pro Mode removed.
+ * Always returns clean action items with optional quality checks.
+ */
 export function formatActionItems(
   items: ActionItem[],
-  issues: { missingOwners: number; missingDue: number; weak: number; missingVerb: number },
-  proMode: boolean
+  issues: {
+    missingOwners: number;
+    missingDue: number;
+    weak: number;
+    missingVerb: number;
+  }
 ) {
-  const lines = items.map((it) => {
-    const flags: string[] = [];
-    if (!it.owner) flags.push("⚠️ missing owner");
-    if (!it.due) flags.push("⏳ missing due date");
-    if (it.action.trim().length < 10) flags.push("😕 vague action");
-
-    const flagText = proMode && flags.length ? ` [${flags.join(", ")}]` : "";
-    return `- ${it.action}${flagText}`;
-  });
+  const lines = items.map((it) => `- ${it.action}`);
 
   const checks: string[] = [];
-  if (issues.missingOwners > 0) checks.push(`⚠️ ${issues.missingOwners} item(s) missing owner`);
-  if (issues.missingDue > 0) checks.push(`⏳ ${issues.missingDue} item(s) missing due date`);
-  if (issues.weak > 0) checks.push(`😕 ${issues.weak} item(s) look too vague`);
-  if (issues.missingVerb > 0) checks.push(`✏️ ${issues.missingVerb} item(s) lack a clear action verb`);
+  if (issues.missingOwners > 0)
+    checks.push(`Missing owner: ${issues.missingOwners}`);
+  if (issues.missingDue > 0)
+    checks.push(`Missing due date: ${issues.missingDue}`);
+  if (issues.weak > 0) checks.push(`Too vague: ${issues.weak}`);
+  if (issues.missingVerb > 0)
+    checks.push(`Missing clear action verb: ${issues.missingVerb}`);
 
   const header = `Action items (${items.length}):`;
+
   const checksBlock =
-    proMode && checks.length ? `\n\nChecks:\n- ${checks.join("\n- ")}` : "";
+    checks.length > 0
+      ? `\n\nQuality checks:\n- ${checks.join("\n- ")}`
+      : "";
 
   return `${header}\n\n${lines.join("\n")}${checksBlock}`;
 }
