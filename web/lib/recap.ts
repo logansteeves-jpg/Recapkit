@@ -1,180 +1,172 @@
 // web/lib/recap.ts
 
-export function normalizeLine(s: string) {
-  return s.replace(/\u00A0/g, " ").replace(/[ \t]+/g, " ").trim();
-}
-
-export function splitIntoSentences(paragraph: string) {
-  const text = paragraph.trim();
-  if (!text) return [];
-  const parts = text.split(/(?<=[.!?])\s+(?=[A-Z0-9(])/);
-  return parts.map((p) => normalizeLine(p)).filter(Boolean);
-}
-
-export function toBullets(text: string) {
-  const raw = text.replace(/\r\n/g, "\n").trim();
-  if (!raw) return [];
-
-  const lines = raw.split("\n").map(normalizeLine).filter(Boolean);
-
-  let candidates: string[] = [];
-  if (lines.length <= 1 && raw.length > 80) {
-    candidates = splitIntoSentences(raw);
-  } else {
-    candidates = lines.flatMap((line) => {
-      const parts = line
-        .split(/[•·]/g)
-        .flatMap((p) => p.split(/\s-\s/g))
-        .flatMap((p) => p.split(/\s\|\s/g))
-        .map(normalizeLine)
-        .filter(Boolean);
-
-      return parts.length ? parts : [line];
-    });
-  }
-
-  const cleaned = candidates
-    .map((s) => s.replace(/^(\*|-|•|\d+\)|\d+\.|\[ \]|\[x\])\s+/, ""))
-    .map(normalizeLine)
-    .filter(Boolean);
-
-  const seen = new Set<string>();
-  const deduped: string[] = [];
-  for (const s of cleaned) {
-    const key = s.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    deduped.push(s);
-  }
-
-  return deduped;
-}
-
 export type ActionItem = {
-  raw: string;
+  text: string;
   owner?: string;
-  action: string;
   due?: string;
 };
 
-export function parseActionItems(bullets: string[]): ActionItem[] {
-  const actionVerb =
-    /\b(follow up|send|share|email|schedule|book|call|confirm|ask|create|update|review|meet|prepare|decide|draft)\b/i;
+export type ActionIssue = {
+  type: "missingOwner" | "missingDueDate" | "vague";
+  message: string;
+};
 
-  const ownerPattern =
-    /^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s+(will|to|is going to|needs to|should)\b/;
-
-  const duePattern =
-    /\b(by|before|on|next)\s+([A-Za-z]+\s*\d{0,2}|EOD\s+\w+|EOD|tomorrow|today|next week|next month|this week|this month)\b/i;
-
-  const items: ActionItem[] = [];
-
-  for (const b of bullets) {
-    const text = b.trim();
-    if (!text) continue;
-
-    const looksLikeAction =
-      actionVerb.test(text) ||
-      ownerPattern.test(text) ||
-      /^action:\s*/i.test(text) ||
-      /^to\s+\w+/i.test(text);
-
-    if (!looksLikeAction) continue;
-
-    const cleaned = text
-      .replace(/^[-•]\s*/, "")
-      .replace(/^action:\s*/i, "")
-      .trim();
-
-    const ownerMatch = cleaned.match(ownerPattern);
-    const owner = ownerMatch?.[1];
-
-    const dueMatch = cleaned.match(duePattern);
-    const due = dueMatch ? `${dueMatch[1]} ${dueMatch[2]}` : undefined;
-
-    const action = cleaned.replace(ownerPattern, "").trim();
-
-    items.push({
-      raw: text,
-      owner,
-      action: action || cleaned,
-      due,
-    });
-  }
-
-  if (items.length === 0) {
-    return bullets.slice(0, 5).map((b) => ({
-      raw: b,
-      action: b.replace(/^[-•]\s*/, "").trim(),
-    }));
-  }
-
-  return items.slice(0, 8);
+function normalizeLines(raw: string): string[] {
+  return raw
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
 }
 
-export function detectActionIssues(items: ActionItem[]) {
-  const missingOwners = items.filter((i) => !i.owner).length;
-  const missingDue = items.filter((i) => !i.due).length;
-  const weak = items.filter((i) => i.action.trim().length < 10).length;
+export function parseBullets(rawNotes: string): string[] {
+  const lines = normalizeLines(rawNotes);
 
-  const commonVerbs = [
-    "follow up",
+  // Treat any line as a “bullet” for now. (Later: timestamps + quick marks)
+  return lines.map((l) => {
+    // Strip leading bullet markers like "-", "*", "•", "1.", etc.
+    return l.replace(/^(\*|-|•|\d+\.)\s+/, "");
+  });
+}
+
+// Very simple placeholder extraction: find lines that look like actions
+export function parseActionItems(bullets: string[]): ActionItem[] {
+  const actionVerbs = [
     "send",
     "share",
-    "email",
+    "follow up",
     "schedule",
     "book",
-    "call",
     "confirm",
-    "ask",
-    "create",
-    "update",
     "review",
-    "meet",
-    "prepare",
-    "decide",
-    "draft",
-    "finalize",
+    "update",
+    "fix",
+    "create",
+    "ship",
+    "deliver",
+    "email",
+    "call",
   ];
 
-  const missingVerb = items.filter((i) => {
-    const a = i.action.trim().toLowerCase();
-    return !commonVerbs.some((v) => a.startsWith(v));
-  }).length;
+  return bullets
+    .filter((b) => {
+      const lower = b.toLowerCase();
+      return actionVerbs.some((v) => lower.includes(v));
+    })
+    .map((b) => ({ text: b }));
+}
 
-  return { missingOwners, missingDue, weak, missingVerb };
+export function detectActionIssues(items: ActionItem[]): ActionIssue[] {
+  const issues: ActionIssue[] = [];
+
+  for (const item of items) {
+    const text = item.text.toLowerCase();
+
+    // Owner heuristic
+    const hasOwner =
+      text.includes("@") ||
+      text.includes("owner:") ||
+      text.includes("assigned to") ||
+      text.includes("i will") ||
+      text.includes("we will");
+
+    // Due date heuristic
+    const hasDue =
+      text.includes("today") ||
+      text.includes("tomorrow") ||
+      text.includes("next week") ||
+      /\b(mon|tue|wed|thu|fri|sat|sun)\b/i.test(text) ||
+      /\b\d{4}-\d{2}-\d{2}\b/.test(text);
+
+    // Vague heuristic
+    const vague =
+      text.length < 20 ||
+      text.includes("look into") ||
+      text.includes("check on") ||
+      text.includes("touch base");
+
+    if (!hasOwner) {
+      issues.push({
+        type: "missingOwner",
+        message: `Missing owner: "${item.text}"`,
+      });
+    }
+
+    if (!hasDue) {
+      issues.push({
+        type: "missingDueDate",
+        message: `Missing due date: "${item.text}"`,
+      });
+    }
+
+    if (vague) {
+      issues.push({
+        type: "vague",
+        message: `Possibly vague: "${item.text}"`,
+      });
+    }
+  }
+
+  return issues;
 }
 
 /**
- * Pro Mode removed.
- * Always returns clean action items with optional quality checks.
+ * IMPORTANT:
+ * - We removed Pro Mode from the product for now.
+ * - This function stays backward-compatible so older page.tsx calls
+ *   that pass a 3rd argument won’t break.
  */
 export function formatActionItems(
   items: ActionItem[],
-  issues: {
-    missingOwners: number;
-    missingDue: number;
-    weak: number;
-    missingVerb: number;
+  issues: ActionIssue[],
+  _legacyProMode?: boolean
+): string {
+  if (!items.length) return "No obvious action items found.";
+
+  const lines: string[] = [];
+  lines.push("Action Items\n");
+
+  items.forEach((item, idx) => {
+    lines.push(`${idx + 1}. ${item.text}`);
+  });
+
+  if (issues.length) {
+    lines.push("\nChecks\n");
+    for (const issue of issues.slice(0, 8)) {
+      lines.push(`- ${issue.message}`);
+    }
+    if (issues.length > 8) {
+      lines.push(`- (+${issues.length - 8} more)`);
+    }
   }
-) {
-  const lines = items.map((it) => `- ${it.action}`);
 
-  const checks: string[] = [];
-  if (issues.missingOwners > 0)
-    checks.push(`Missing owner: ${issues.missingOwners}`);
-  if (issues.missingDue > 0)
-    checks.push(`Missing due date: ${issues.missingDue}`);
-  if (issues.weak > 0) checks.push(`Too vague: ${issues.weak}`);
-  if (issues.missingVerb > 0)
-    checks.push(`Missing clear action verb: ${issues.missingVerb}`);
+  return lines.join("\n");
+}
 
-  const header = `Action items (${items.length}):`;
+export function makeSummary(bullets: string[]): string {
+  if (!bullets.length) return "No notes provided.";
 
-  const checksBlock =
-    checks.length > 0
-      ? `\n\nQuality checks:\n- ${checks.join("\n- ")}`
-      : "";
+  const top = bullets.slice(0, 6);
+  const restCount = Math.max(0, bullets.length - top.length);
 
-  return `${header}\n\n${lines.join("\n")}${checksBlock}`;
+  const lines: string[] = [];
+  lines.push("Summary\n");
+  for (const b of top) lines.push(`- ${b}`);
+  if (restCount) lines.push(`\n(${restCount} additional note${restCount === 1 ? "" : "s"})`);
+
+  return lines.join("\n");
+}
+
+export function makeEmailDraft(bullets: string[]): string {
+  const subject = "Follow-up from our meeting";
+  const bodyLines = bullets.slice(0, 6).map((b) => `- ${b}`);
+
+  return (
+    `Email Draft\n` +
+    `Subject: ${subject}\n\n` +
+    `Hi,\n\n` +
+    `Here are the key points from our discussion:\n` +
+    `${bodyLines.join("\n")}\n\n` +
+    `Let me know if you have questions.\n\n` +
+    `Thanks,`
+  );
 }
