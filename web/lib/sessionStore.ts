@@ -6,6 +6,15 @@ export type Outputs = {
   email: string;
 };
 
+export type SessionCheckpoint = {
+  id: string;
+  createdAt: number;
+  rawNotes: string;
+  objective: string;
+  outputs: Outputs;
+};
+
+
 export type Session = {
   id: string;
   title: string;
@@ -14,9 +23,11 @@ export type Session = {
   objective: string;
   rawNotes: string;
   outputs: Outputs;
+  checkpoints?: SessionCheckpoint[]; 
   createdAt: number;
   updatedAt: number;
 };
+
 
 export type Folder = {
   id: string;

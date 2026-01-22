@@ -137,7 +137,11 @@ export default function Page() {
 
   function patchSession(patch: Partial<Session>) {
     if (!currentSession) return;
-    const updated: Session = { ...currentSession, ...patch, updatedAt: Date.now() };
+    const updated: Session = {
+      ...currentSession,
+      ...patch,
+      updatedAt: Date.now(),
+    };
     setSessions((prev) => updateSession(prev, updated));
   }
 
@@ -145,6 +149,26 @@ export default function Page() {
     if (!currentSession) return;
     const outputs = generateArtifactsFromRawNotes(currentSession.rawNotes);
     patchSession({ outputs });
+  }
+
+  function handlePauseMeeting() {
+    if (!currentSession) return;
+
+    const checkpoint = {
+      id: Math.random().toString(36).slice(2, 10),
+      createdAt: Date.now(),
+      rawNotes: currentSession.rawNotes,
+      objective: currentSession.objective,
+      outputs: currentSession.outputs,
+    };
+
+    const updated: Session = {
+      ...currentSession,
+      checkpoints: [...(currentSession.checkpoints ?? []), checkpoint],
+      updatedAt: Date.now(),
+    };
+
+    setSessions((prev) => updateSession(prev, updated));
   }
 
   function handleEndMeeting() {
@@ -165,10 +189,21 @@ export default function Page() {
       }}
     >
       {/* Header */}
-      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 12 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-end",
+          justifyContent: "space-between",
+          gap: 12,
+        }}
+      >
         <div>
-          <div style={{ fontSize: 46, fontWeight: 800, lineHeight: 1.0 }}>RecapKit</div>
-          <div style={{ marginTop: 6, color: "#666", fontSize: 14 }}>{headerSubtitle}</div>
+          <div style={{ fontSize: 46, fontWeight: 800, lineHeight: 1.0 }}>
+            RecapKit
+          </div>
+          <div style={{ marginTop: 6, color: "#666", fontSize: 14 }}>
+            {headerSubtitle}
+          </div>
         </div>
 
         {screen.name === "session" ? (
@@ -193,7 +228,14 @@ export default function Page() {
       {/* HOME */}
       {screen.name === "home" ? (
         <section>
-          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 10,
+              alignItems: "center",
+              flexWrap: "wrap",
+            }}
+          >
             <button
               onClick={handleCreateStandalone}
               style={{
@@ -227,7 +269,14 @@ export default function Page() {
             </div>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 16 }}>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: 14,
+              marginTop: 16,
+            }}
+          >
             {/* Files */}
             <div
               style={{
@@ -237,7 +286,14 @@ export default function Page() {
                 minHeight: 240,
               }}
             >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  gap: 10,
+                }}
+              >
                 <div style={{ fontWeight: 800, fontSize: 16 }}>Files</div>
 
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -286,7 +342,13 @@ export default function Page() {
                             padding: 12,
                           }}
                         >
-                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              gap: 10,
+                            }}
+                          >
                             <div style={{ fontWeight: 800 }}>{f.name}</div>
                             <button
                               onClick={() => handleCreateSessionInFolder(f.id)}
@@ -303,7 +365,14 @@ export default function Page() {
                             </button>
                           </div>
 
-                          <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                          <div
+                            style={{
+                              marginTop: 10,
+                              display: "flex",
+                              flexDirection: "column",
+                              gap: 8,
+                            }}
+                          >
                             {list.length === 0 ? (
                               <div style={{ color: "#777", fontSize: 13 }}>
                                 No sessions yet.
@@ -323,7 +392,9 @@ export default function Page() {
                                   }}
                                 >
                                   <div style={{ fontWeight: 800 }}>{s.title}</div>
-                                  <div style={{ color: "#777", fontSize: 12 }}>{formatDate(s.updatedAt)}</div>
+                                  <div style={{ color: "#777", fontSize: 12 }}>
+                                    {formatDate(s.updatedAt)}
+                                  </div>
                                 </button>
                               ))
                             )}
@@ -347,7 +418,14 @@ export default function Page() {
             >
               <div style={{ fontWeight: 800, fontSize: 16 }}>Single Sessions</div>
 
-              <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+              <div
+                style={{
+                  marginTop: 12,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 10,
+                }}
+              >
                 {standaloneSessions.length === 0 ? (
                   <div style={{ color: "#777", fontSize: 13 }}>
                     No standalone sessions yet.
@@ -367,7 +445,9 @@ export default function Page() {
                       }}
                     >
                       <div style={{ fontWeight: 800 }}>{s.title}</div>
-                      <div style={{ color: "#777", fontSize: 12 }}>{formatDate(s.updatedAt)}</div>
+                      <div style={{ color: "#777", fontSize: 12 }}>
+                        {formatDate(s.updatedAt)}
+                      </div>
                     </button>
                   ))
                 )}
@@ -386,18 +466,20 @@ export default function Page() {
             <div className="recap-session-grid">
               {/* Left: context list */}
               <aside
-  className="recap-session-sidebar"
-  style={{
-    border: "1px solid #eee",
-    borderRadius: 14,
-    padding: 14,
-    height: "fit-content",
-  }}
->
-
+                className="recap-session-sidebar"
+                style={{
+                  border: "1px solid #eee",
+                  borderRadius: 14,
+                  padding: 14,
+                  height: "fit-content",
+                }}
+              >
                 <div style={{ fontWeight: 900, fontSize: 14 }}>
                   {currentSession.folderId
-                    ? `File: ${folders.find((f) => f.id === currentSession.folderId)?.name ?? "Unknown"}`
+                    ? `File: ${
+                        folders.find((f) => f.id === currentSession.folderId)?.name ??
+                        "Unknown"
+                      }`
                     : "Standalone Session"}
                 </div>
 
@@ -422,7 +504,9 @@ export default function Page() {
                         }}
                       >
                         <div style={{ fontWeight: 800 }}>{s.title}</div>
-                        <div style={{ opacity: 0.8, fontSize: 12 }}>{formatDate(s.updatedAt)}</div>
+                        <div style={{ opacity: 0.8, fontSize: 12 }}>
+                          {formatDate(s.updatedAt)}
+                        </div>
                       </button>
                     );
                   })}
@@ -431,7 +515,8 @@ export default function Page() {
                 <div style={{ marginTop: 12 }}>
                   <button
                     onClick={() => {
-                      if (currentSession.folderId) handleCreateSessionInFolder(currentSession.folderId);
+                      if (currentSession.folderId)
+                        handleCreateSessionInFolder(currentSession.folderId);
                       else handleCreateStandalone();
                     }}
                     style={{
@@ -479,23 +564,40 @@ export default function Page() {
                     </div>
 
                     {currentSession.mode === "current" ? (
-                      <button
-                        onClick={handleEndMeeting}
-                        style={{
-                          padding: "10px 12px",
-                          borderRadius: 12,
-                          border: "1px solid #111",
-                          background: "#111",
-                          color: "#fff",
-                          cursor: "pointer",
-                          fontWeight: 900,
-                        }}
-                      >
-                        End Meeting (Convert to Past)
-                      </button>
+                      <div style={{ display: "flex", gap: 10 }}>
+                        <button
+                          onClick={handlePauseMeeting}
+                          style={{
+                            padding: "10px 12px",
+                            borderRadius: 12,
+                            border: "1px solid #ddd",
+                            background: "#fff",
+                            cursor: "pointer",
+                            fontWeight: 800,
+                          }}
+                        >
+                          Pause Meeting
+                        </button>
+
+                        <button
+                          onClick={handleEndMeeting}
+                          style={{
+                            padding: "10px 12px",
+                            borderRadius: 12,
+                            border: "1px solid #111",
+                            background: "#111",
+                            color: "#fff",
+                            cursor: "pointer",
+                            fontWeight: 900,
+                          }}
+                        >
+                          End Meeting
+                        </button>
+                      </div>
                     ) : null}
                   </div>
 
+                  {/* ✅ THIS IS THE FIX: objective block is now outside the flex row */}
                   <div style={{ marginTop: 10 }}>
                     <input
                       value={currentSession.objective}
@@ -576,7 +678,8 @@ export default function Page() {
                     </div>
 
                     <div style={{ marginTop: 8, color: "#777", fontSize: 12 }}>
-                      Tip: In <b>Current</b> mode, use “End Meeting” when you’re done to convert to <b>Past</b> and auto-generate outputs.
+                      Tip: In <b>Current</b> mode, use “End Meeting” when you’re done to convert to{" "}
+                      <b>Past</b> and auto-generate outputs.
                     </div>
                   </div>
 
@@ -591,9 +694,7 @@ export default function Page() {
                     <div style={{ fontWeight: 900, marginBottom: 8 }}>Output</div>
 
                     {/* Summary */}
-                    <div style={{ fontWeight: 900, fontSize: 13, marginBottom: 6 }}>
-                      Summary
-                    </div>
+                    <div style={{ fontWeight: 900, fontSize: 13, marginBottom: 6 }}>Summary</div>
                     <pre
                       style={{
                         whiteSpace: "pre-wrap",
