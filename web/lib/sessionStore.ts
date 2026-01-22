@@ -14,7 +14,6 @@ export type SessionCheckpoint = {
   outputs: Outputs;
 };
 
-
 export type Session = {
   id: string;
   title: string;
@@ -22,12 +21,18 @@ export type Session = {
   mode: SessionMode;
   objective: string;
   rawNotes: string;
+
+  // NEW: notes added after the meeting (Past mode only)
+  postMeetingNotes?: string;
+
   outputs: Outputs;
-  checkpoints?: SessionCheckpoint[]; 
+
+  // NEW: local session history checkpoints (Pause meeting / clear / etc.)
+  checkpoints?: SessionCheckpoint[];
+
   createdAt: number;
   updatedAt: number;
 };
-
 
 export type Folder = {
   id: string;
@@ -75,7 +80,9 @@ export function createSession(): Session {
     mode: "current",
     objective: "",
     rawNotes: "",
+    postMeetingNotes: "",
     outputs: { actionItems: "", summary: "", email: "" },
+    checkpoints: [],
     createdAt: now,
     updatedAt: now,
   };

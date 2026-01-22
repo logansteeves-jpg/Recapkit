@@ -177,6 +177,61 @@ export default function Page() {
     patchSession({ mode: "past", outputs });
   }
 
+  function snapshotCurrentSession(): SessionCheckpoint | null {
+  if (!currentSession) return null;
+  return {
+    id: Math.random().toString(36).slice(2, 10),
+    createdAt: Date.now(),
+    rawNotes: currentSession.rawNotes,
+    objective: currentSession.objective,
+    outputs: currentSession.outputs,
+  };
+}
+
+  function handleUndo() {
+    if (!currentSession) return;
+    const checkpoints = currentSession.checkpoints ?? [];
+    if (checkpoints.length === 0) return;
+
+    const previous = checkpoints[checkpoints.length - 1];
+    const nowSnap = snapshotCurrentSession();
+    if (!nowSnap) return;
+
+    const updated: Session = {
+      ...currentSession,
+      rawNotes: previous.rawNotes,
+      objective: previous.objective,
+      outputs: previous.outputs,
+      checkpoints: checkpoints.slice(0, -1),
+      redoStack: [...(currentSession.redoStack ?? []), nowSnap],
+      updatedAt: Date.now(),
+    };
+
+    setSessions((prev) => updateSession(prev, updated));
+  }
+
+  function handleRedo() {
+    if (!currentSession) return;
+    const redo = currentSession.redoStack ?? [];
+    if (redo.length === 0) return;
+
+    const next = redo[redo.length - 1];
+    const nowSnap = snapshotCurrentSession();
+    if (!nowSnap) return;
+
+    const updated: Session = {
+      ...currentSession,
+      rawNotes: next.rawNotes,
+      objective: next.objective,
+      outputs: next.outputs,
+      redoStack: redo.slice(0, -1),
+      checkpoints: [...(currentSession.checkpoints ?? []), nowSnap],
+      updatedAt: Date.now(),
+    };
+
+    setSessions((prev) => updateSession(prev, updated));
+  }
+
   const headerSubtitle =
     "Turning your meetings into actionable and accountable follow-ups";
 
@@ -625,7 +680,11 @@ export default function Page() {
                     <div style={{ fontWeight: 900, marginBottom: 8 }}>Raw Notes</div>
                     <textarea
                       value={currentSession.rawNotes}
-                      onChange={(e) => patchSession({ rawNotes: e.target.value })}
+                      readOnly={currentSession.mode === "past"}
+                      onChange={(e) => {
+                        if (currentSession.mode === "past") return;
+                        patchSession({ rawNotes: e.target.value });
+                      }}
                       placeholder="Paste your meeting notes here..."
                       style={{
                         width: "100%",
@@ -636,6 +695,7 @@ export default function Page() {
                         fontSize: 14,
                         lineHeight: 1.4,
                         resize: "vertical",
+                        background: currentSession.mode === "past" ? "#fafafa" : "#fff",
                       }}
                     />
 
@@ -657,13 +717,28 @@ export default function Page() {
                       </button>
 
                       <button
-                        onClick={() =>
-                          patchSession({
+                        onClick={() => {
+                          if (!currentSession) return;
+
+                          const checkpoint = {
+                            id: Math.random().toString(36).slice(2, 10),
+                            createdAt: Date.now(),
+                            rawNotes: currentSession.rawNotes,
+                            objective: currentSession.objective,
+                            outputs: currentSession.outputs,
+                          };
+
+                          const updated: Session = {
+                            ...currentSession,
+                            checkpoints: [...(currentSession.checkpoints ?? []), checkpoint],
                             rawNotes: "",
                             objective: "",
                             outputs: { actionItems: "", summary: "", email: "" },
-                          })
-                        }
+                            updatedAt: Date.now(),
+                          };
+
+                          setSessions((prev) => updateSession(prev, updated));
+                        }}
                         style={{
                           padding: "10px 14px",
                           borderRadius: 12,
@@ -681,7 +756,41 @@ export default function Page() {
                       Tip: In <b>Current</b> mode, use “End Meeting” when you’re done to convert to{" "}
                       <b>Past</b> and auto-generate outputs.
                     </div>
-                  </div>
+
+                    {currentSession.mode === "past" && (
+                      <div
+                        style={{
+                          marginTop: 12,
+                          borderTop: "1px solid #eee",
+                          paddingTop: 12,
+                        }}
+                      >
+                        <div style={{ fontWeight: 900, marginBottom: 8 }}>
+                          Post-Meeting Notes
+                        </div>
+
+                        <textarea
+                          value={currentSession.postMeetingNotes ?? ""}
+                          onChange={(e) =>
+                            patchSession({ postMeetingNotes: e.target.value })
+                          }
+                          placeholder="Add anything you remembered after the meeting (clarifications, follow-ups, context, etc.)"
+                          style={{
+                            width: "100%",
+                            minHeight: 140,
+                            borderRadius: 12,
+                            border: "1px solid #ddd",
+                            padding: 12,
+                            fontSize: 14,
+                            lineHeight: 1.4,
+                            resize: "vertical",
+                            background: "#fff",
+                          }}
+                        />
+                      </div>
+                    )}
+
+                    </div>
 
                   {/* Output */}
                   <div
