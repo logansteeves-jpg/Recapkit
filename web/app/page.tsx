@@ -27,6 +27,16 @@ type Screen =
   | { name: "home" }
   | { name: "session"; sessionId: string };
 
+// Local-only type so page.tsx compiles even if sessionStore.ts
+// does not yet declare checkpoints/redoStack/postMeetingNotes.
+type SessionCheckpoint = {
+  id: string;
+  createdAt: number;
+  rawNotes: string;
+  objective: string;
+  outputs: { actionItems: string; summary: string; email: string };
+};
+
 function formatDate(ts: number) {
   try {
     return new Date(ts).toLocaleString();
@@ -53,18 +63,6 @@ export default function Page() {
   const [emailTone, setEmailTone] = useState<
     "professional" | "warm" | "friendlyProfessional" | "casual"
   >("professional");
-
-  function generateArtifactsFromRawNotes(rawNotes: string) {
-    const bullets: string[] = parseBullets(rawNotes);
-    const items = parseActionItems(bullets);
-    const issues = detectActionIssues(items);
-
-    return {
-      summary: makeSummary(bullets),
-      actionItems: formatActionItems(items, issues),
-      email: makeEmailDraft(bullets, { type: emailType, tone: emailTone }),
-    };
-  }
 
   // load once
   useEffect(() => {
@@ -135,14 +133,33 @@ export default function Page() {
     openSession(updated.id);
   }
 
-  function patchSession(patch: Partial<Session>) {
+  function patchSession(patch: Partial<Session> & Record<string, any>) {
     if (!currentSession) return;
     const updated: Session = {
       ...currentSession,
-      ...patch,
+      ...(patch as any),
       updatedAt: Date.now(),
     };
     setSessions((prev) => updateSession(prev, updated));
+  }
+
+  function safeMakeEmailDraft(bullets: string[]) {
+    // Some versions of recap.ts accept only (bullets)
+    // and newer versions accept (bullets, { type, tone }).
+    // Casting avoids TS mismatch and keeps your UI stable.
+    return (makeEmailDraft as any)(bullets, { type: emailType, tone: emailTone }) as string;
+  }
+
+  function generateArtifactsFromRawNotes(rawNotes: string) {
+    const bullets: string[] = parseBullets(rawNotes);
+    const items = parseActionItems(bullets);
+    const issues = detectActionIssues(items);
+
+    return {
+      summary: makeSummary(bullets),
+      actionItems: formatActionItems(items, issues),
+      email: safeMakeEmailDraft(bullets),
+    };
   }
 
   function handleGenerateNow() {
@@ -151,24 +168,34 @@ export default function Page() {
     patchSession({ outputs });
   }
 
-  function handlePauseMeeting() {
-    if (!currentSession) return;
-
-    const checkpoint = {
+  function snapshotCurrentSession(): SessionCheckpoint | null {
+    if (!currentSession) return null;
+    return {
       id: Math.random().toString(36).slice(2, 10),
       createdAt: Date.now(),
       rawNotes: currentSession.rawNotes,
       objective: currentSession.objective,
       outputs: currentSession.outputs,
     };
+  }
 
-    const updated: Session = {
+  function handlePauseMeeting() {
+    if (!currentSession) return;
+
+    const checkpoint = snapshotCurrentSession();
+    if (!checkpoint) return;
+
+    const checkpoints = ((currentSession as any).checkpoints ?? []) as SessionCheckpoint[];
+
+    const updated: any = {
       ...currentSession,
-      checkpoints: [...(currentSession.checkpoints ?? []), checkpoint],
+      checkpoints: [...checkpoints, checkpoint],
+      // Any new "commit" kills redo history (Word/GDocs behavior)
+      redoStack: [],
       updatedAt: Date.now(),
     };
 
-    setSessions((prev) => updateSession(prev, updated));
+    setSessions((prev) => updateSession(prev, updated as Session));
   }
 
   function handleEndMeeting() {
@@ -177,63 +204,57 @@ export default function Page() {
     patchSession({ mode: "past", outputs });
   }
 
-  function snapshotCurrentSession(): SessionCheckpoint | null {
-  if (!currentSession) return null;
-  return {
-    id: Math.random().toString(36).slice(2, 10),
-    createdAt: Date.now(),
-    rawNotes: currentSession.rawNotes,
-    objective: currentSession.objective,
-    outputs: currentSession.outputs,
-  };
-}
-
   function handleUndo() {
     if (!currentSession) return;
-    const checkpoints = currentSession.checkpoints ?? [];
+
+    const checkpoints = ((currentSession as any).checkpoints ?? []) as SessionCheckpoint[];
     if (checkpoints.length === 0) return;
 
     const previous = checkpoints[checkpoints.length - 1];
     const nowSnap = snapshotCurrentSession();
     if (!nowSnap) return;
 
-    const updated: Session = {
+    const redoStack = ((currentSession as any).redoStack ?? []) as SessionCheckpoint[];
+
+    const updated: any = {
       ...currentSession,
       rawNotes: previous.rawNotes,
       objective: previous.objective,
       outputs: previous.outputs,
       checkpoints: checkpoints.slice(0, -1),
-      redoStack: [...(currentSession.redoStack ?? []), nowSnap],
+      redoStack: [...redoStack, nowSnap],
       updatedAt: Date.now(),
     };
 
-    setSessions((prev) => updateSession(prev, updated));
+    setSessions((prev) => updateSession(prev, updated as Session));
   }
 
   function handleRedo() {
     if (!currentSession) return;
-    const redo = currentSession.redoStack ?? [];
-    if (redo.length === 0) return;
 
-    const next = redo[redo.length - 1];
+    const redoStack = ((currentSession as any).redoStack ?? []) as SessionCheckpoint[];
+    if (redoStack.length === 0) return;
+
+    const next = redoStack[redoStack.length - 1];
     const nowSnap = snapshotCurrentSession();
     if (!nowSnap) return;
 
-    const updated: Session = {
+    const checkpoints = ((currentSession as any).checkpoints ?? []) as SessionCheckpoint[];
+
+    const updated: any = {
       ...currentSession,
       rawNotes: next.rawNotes,
       objective: next.objective,
       outputs: next.outputs,
-      redoStack: redo.slice(0, -1),
-      checkpoints: [...(currentSession.checkpoints ?? []), nowSnap],
+      redoStack: redoStack.slice(0, -1),
+      checkpoints: [...checkpoints, nowSnap],
       updatedAt: Date.now(),
     };
 
-    setSessions((prev) => updateSession(prev, updated));
+    setSessions((prev) => updateSession(prev, updated as Session));
   }
 
-  const headerSubtitle =
-    "Turning your meetings into actionable and accountable follow-ups";
+  const headerSubtitle = "Turning your meetings into actionable and accountable follow-ups";
 
   return (
     <main
@@ -253,12 +274,8 @@ export default function Page() {
         }}
       >
         <div>
-          <div style={{ fontSize: 46, fontWeight: 800, lineHeight: 1.0 }}>
-            RecapKit
-          </div>
-          <div style={{ marginTop: 6, color: "#666", fontSize: 14 }}>
-            {headerSubtitle}
-          </div>
+          <div style={{ fontSize: 46, fontWeight: 800, lineHeight: 1.0 }}>RecapKit</div>
+          <div style={{ marginTop: 6, color: "#666", fontSize: 14 }}>{headerSubtitle}</div>
         </div>
 
         {screen.name === "session" ? (
@@ -283,14 +300,7 @@ export default function Page() {
       {/* HOME */}
       {screen.name === "home" ? (
         <section>
-          <div
-            style={{
-              display: "flex",
-              gap: 10,
-              alignItems: "center",
-              flexWrap: "wrap",
-            }}
-          >
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
             <button
               onClick={handleCreateStandalone}
               style={{
@@ -324,31 +334,10 @@ export default function Page() {
             </div>
           </div>
 
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              gap: 14,
-              marginTop: 16,
-            }}
-          >
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 16 }}>
             {/* Files */}
-            <div
-              style={{
-                border: "1px solid #eee",
-                borderRadius: 14,
-                padding: 14,
-                minHeight: 240,
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  gap: 10,
-                }}
-              >
+            <div style={{ border: "1px solid #eee", borderRadius: 14, padding: 14, minHeight: 240 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
                 <div style={{ fontWeight: 800, fontSize: 16 }}>Files</div>
 
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -381,29 +370,14 @@ export default function Page() {
 
               <div style={{ marginTop: 12 }}>
                 {folders.length === 0 ? (
-                  <div style={{ color: "#777", fontSize: 13 }}>
-                    No files yet. Create one above.
-                  </div>
+                  <div style={{ color: "#777", fontSize: 13 }}>No files yet. Create one above.</div>
                 ) : (
                   <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                     {folders.map((f) => {
                       const list = sessionsByFolder[f.id] ?? [];
                       return (
-                        <div
-                          key={f.id}
-                          style={{
-                            border: "1px solid #eee",
-                            borderRadius: 12,
-                            padding: 12,
-                          }}
-                        >
-                          <div
-                            style={{
-                              display: "flex",
-                              justifyContent: "space-between",
-                              gap: 10,
-                            }}
-                          >
+                        <div key={f.id} style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
                             <div style={{ fontWeight: 800 }}>{f.name}</div>
                             <button
                               onClick={() => handleCreateSessionInFolder(f.id)}
@@ -420,18 +394,9 @@ export default function Page() {
                             </button>
                           </div>
 
-                          <div
-                            style={{
-                              marginTop: 10,
-                              display: "flex",
-                              flexDirection: "column",
-                              gap: 8,
-                            }}
-                          >
+                          <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
                             {list.length === 0 ? (
-                              <div style={{ color: "#777", fontSize: 13 }}>
-                                No sessions yet.
-                              </div>
+                              <div style={{ color: "#777", fontSize: 13 }}>No sessions yet.</div>
                             ) : (
                               list.slice(0, 3).map((s) => (
                                 <button
@@ -447,9 +412,7 @@ export default function Page() {
                                   }}
                                 >
                                   <div style={{ fontWeight: 800 }}>{s.title}</div>
-                                  <div style={{ color: "#777", fontSize: 12 }}>
-                                    {formatDate(s.updatedAt)}
-                                  </div>
+                                  <div style={{ color: "#777", fontSize: 12 }}>{formatDate(s.updatedAt)}</div>
                                 </button>
                               ))
                             )}
@@ -463,28 +426,12 @@ export default function Page() {
             </div>
 
             {/* Single Sessions */}
-            <div
-              style={{
-                border: "1px solid #eee",
-                borderRadius: 14,
-                padding: 14,
-                minHeight: 240,
-              }}
-            >
+            <div style={{ border: "1px solid #eee", borderRadius: 14, padding: 14, minHeight: 240 }}>
               <div style={{ fontWeight: 800, fontSize: 16 }}>Single Sessions</div>
 
-              <div
-                style={{
-                  marginTop: 12,
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 10,
-                }}
-              >
+              <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
                 {standaloneSessions.length === 0 ? (
-                  <div style={{ color: "#777", fontSize: 13 }}>
-                    No standalone sessions yet.
-                  </div>
+                  <div style={{ color: "#777", fontSize: 13 }}>No standalone sessions yet.</div>
                 ) : (
                   standaloneSessions.map((s) => (
                     <button
@@ -500,9 +447,7 @@ export default function Page() {
                       }}
                     >
                       <div style={{ fontWeight: 800 }}>{s.title}</div>
-                      <div style={{ color: "#777", fontSize: 12 }}>
-                        {formatDate(s.updatedAt)}
-                      </div>
+                      <div style={{ color: "#777", fontSize: 12 }}>{formatDate(s.updatedAt)}</div>
                     </button>
                   ))
                 )}
@@ -531,47 +476,40 @@ export default function Page() {
               >
                 <div style={{ fontWeight: 900, fontSize: 14 }}>
                   {currentSession.folderId
-                    ? `File: ${
-                        folders.find((f) => f.id === currentSession.folderId)?.name ??
-                        "Unknown"
-                      }`
+                    ? `File: ${folders.find((f) => f.id === currentSession.folderId)?.name ?? "Unknown"}`
                     : "Standalone Session"}
                 </div>
 
                 <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
-                  {(currentSession.folderId
-                    ? sessionsByFolder[currentSession.folderId] ?? []
-                    : standaloneSessions
-                  ).map((s) => {
-                    const active = s.id === currentSession.id;
-                    return (
-                      <button
-                        key={s.id}
-                        onClick={() => openSession(s.id)}
-                        style={{
-                          textAlign: "left",
-                          padding: "10px 12px",
-                          borderRadius: 12,
-                          border: "1px solid #eee",
-                          background: active ? "#111" : "#fff",
-                          color: active ? "#fff" : "#111",
-                          cursor: "pointer",
-                        }}
-                      >
-                        <div style={{ fontWeight: 800 }}>{s.title}</div>
-                        <div style={{ opacity: 0.8, fontSize: 12 }}>
-                          {formatDate(s.updatedAt)}
-                        </div>
-                      </button>
-                    );
-                  })}
+                  {(currentSession.folderId ? sessionsByFolder[currentSession.folderId] ?? [] : standaloneSessions).map(
+                    (s) => {
+                      const active = s.id === currentSession.id;
+                      return (
+                        <button
+                          key={s.id}
+                          onClick={() => openSession(s.id)}
+                          style={{
+                            textAlign: "left",
+                            padding: "10px 12px",
+                            borderRadius: 12,
+                            border: "1px solid #eee",
+                            background: active ? "#111" : "#fff",
+                            color: active ? "#fff" : "#111",
+                            cursor: "pointer",
+                          }}
+                        >
+                          <div style={{ fontWeight: 800 }}>{s.title}</div>
+                          <div style={{ opacity: 0.8, fontSize: 12 }}>{formatDate(s.updatedAt)}</div>
+                        </button>
+                      );
+                    }
+                  )}
                 </div>
 
                 <div style={{ marginTop: 12 }}>
                   <button
                     onClick={() => {
-                      if (currentSession.folderId)
-                        handleCreateSessionInFolder(currentSession.folderId);
+                      if (currentSession.folderId) handleCreateSessionInFolder(currentSession.folderId);
                       else handleCreateStandalone();
                     }}
                     style={{
@@ -590,15 +528,9 @@ export default function Page() {
               </aside>
 
               {/* Right: editor + outputs */}
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div className="recap-session-main" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                 {/* Title row */}
-                <div
-                  style={{
-                    border: "1px solid #eee",
-                    borderRadius: 14,
-                    padding: 14,
-                  }}
-                >
+                <div style={{ border: "1px solid #eee", borderRadius: 14, padding: 14 }}>
                   <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                     <input
                       value={currentSession.title}
@@ -652,7 +584,6 @@ export default function Page() {
                     ) : null}
                   </div>
 
-                  {/* ✅ THIS IS THE FIX: objective block is now outside the flex row */}
                   <div style={{ marginTop: 10 }}>
                     <input
                       value={currentSession.objective}
@@ -670,14 +601,9 @@ export default function Page() {
 
                 <div className="recap-home-grid" style={{ marginTop: 16 }}>
                   {/* Raw Notes */}
-                  <div
-                    style={{
-                      border: "1px solid #eee",
-                      borderRadius: 14,
-                      padding: 14,
-                    }}
-                  >
+                  <div style={{ border: "1px solid #eee", borderRadius: 14, padding: 14 }}>
                     <div style={{ fontWeight: 900, marginBottom: 8 }}>Raw Notes</div>
+
                     <textarea
                       value={currentSession.rawNotes}
                       readOnly={currentSession.mode === "past"}
@@ -717,27 +643,75 @@ export default function Page() {
                       </button>
 
                       <button
+                        onClick={handleUndo}
+                        disabled={(((currentSession as any).checkpoints ?? []) as SessionCheckpoint[]).length === 0}
+                        style={{
+                          padding: "10px 14px",
+                          borderRadius: 12,
+                          border: "1px solid #ddd",
+                          background:
+                            (((currentSession as any).checkpoints ?? []) as SessionCheckpoint[]).length > 0
+                              ? "#fff"
+                              : "#eee",
+                          color:
+                            (((currentSession as any).checkpoints ?? []) as SessionCheckpoint[]).length > 0
+                              ? "#111"
+                              : "#777",
+                          cursor:
+                            (((currentSession as any).checkpoints ?? []) as SessionCheckpoint[]).length > 0
+                              ? "pointer"
+                              : "not-allowed",
+                          fontWeight: 800,
+                        }}
+                      >
+                        Undo
+                      </button>
+
+                      <button
+                        onClick={handleRedo}
+                        disabled={(((currentSession as any).redoStack ?? []) as SessionCheckpoint[]).length === 0}
+                        style={{
+                          padding: "10px 14px",
+                          borderRadius: 12,
+                          border: "1px solid #ddd",
+                          background:
+                            (((currentSession as any).redoStack ?? []) as SessionCheckpoint[]).length > 0
+                              ? "#fff"
+                              : "#eee",
+                          color:
+                            (((currentSession as any).redoStack ?? []) as SessionCheckpoint[]).length > 0
+                              ? "#111"
+                              : "#777",
+                          cursor:
+                            (((currentSession as any).redoStack ?? []) as SessionCheckpoint[]).length > 0
+                              ? "pointer"
+                              : "not-allowed",
+                          fontWeight: 800,
+                        }}
+                      >
+                        Redo
+                      </button>
+
+                      <button
                         onClick={() => {
                           if (!currentSession) return;
 
-                          const checkpoint = {
-                            id: Math.random().toString(36).slice(2, 10),
-                            createdAt: Date.now(),
-                            rawNotes: currentSession.rawNotes,
-                            objective: currentSession.objective,
-                            outputs: currentSession.outputs,
-                          };
+                          const checkpoint = snapshotCurrentSession();
+                          if (!checkpoint) return;
 
-                          const updated: Session = {
+                          const checkpoints = ((currentSession as any).checkpoints ?? []) as SessionCheckpoint[];
+
+                          const updated: any = {
                             ...currentSession,
-                            checkpoints: [...(currentSession.checkpoints ?? []), checkpoint],
+                            checkpoints: [...checkpoints, checkpoint],
+                            redoStack: [], // important: new action clears redo chain
                             rawNotes: "",
                             objective: "",
                             outputs: { actionItems: "", summary: "", email: "" },
                             updatedAt: Date.now(),
                           };
 
-                          setSessions((prev) => updateSession(prev, updated));
+                          setSessions((prev) => updateSession(prev, updated as Session));
                         }}
                         style={{
                           padding: "10px 14px",
@@ -753,27 +727,16 @@ export default function Page() {
                     </div>
 
                     <div style={{ marginTop: 8, color: "#777", fontSize: 12 }}>
-                      Tip: In <b>Current</b> mode, use “End Meeting” when you’re done to convert to{" "}
-                      <b>Past</b> and auto-generate outputs.
+                      Tip: In <b>Current</b> mode, use “End Meeting” when you’re done to convert to <b>Past</b> and auto-generate outputs.
                     </div>
 
-                    {currentSession.mode === "past" && (
-                      <div
-                        style={{
-                          marginTop: 12,
-                          borderTop: "1px solid #eee",
-                          paddingTop: 12,
-                        }}
-                      >
-                        <div style={{ fontWeight: 900, marginBottom: 8 }}>
-                          Post-Meeting Notes
-                        </div>
+                    {currentSession.mode === "past" ? (
+                      <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 12 }}>
+                        <div style={{ fontWeight: 900, marginBottom: 8 }}>Post-Meeting Notes</div>
 
                         <textarea
-                          value={currentSession.postMeetingNotes ?? ""}
-                          onChange={(e) =>
-                            patchSession({ postMeetingNotes: e.target.value })
-                          }
+                          value={((currentSession as any).postMeetingNotes ?? "") as string}
+                          onChange={(e) => patchSession({ postMeetingNotes: e.target.value } as any)}
                           placeholder="Add anything you remembered after the meeting (clarifications, follow-ups, context, etc.)"
                           style={{
                             width: "100%",
@@ -788,18 +751,11 @@ export default function Page() {
                           }}
                         />
                       </div>
-                    )}
-
-                    </div>
+                    ) : null}
+                  </div>
 
                   {/* Output */}
-                  <div
-                    style={{
-                      border: "1px solid #eee",
-                      borderRadius: 14,
-                      padding: 14,
-                    }}
-                  >
+                  <div style={{ border: "1px solid #eee", borderRadius: 14, padding: 14 }}>
                     <div style={{ fontWeight: 900, marginBottom: 8 }}>Output</div>
 
                     {/* Summary */}
@@ -825,9 +781,7 @@ export default function Page() {
                     <div style={{ height: 12 }} />
 
                     {/* Action Items */}
-                    <div style={{ fontWeight: 900, fontSize: 13, marginBottom: 6 }}>
-                      Action Items (from notes)
-                    </div>
+                    <div style={{ fontWeight: 900, fontSize: 13, marginBottom: 6 }}>Action Items (from notes)</div>
                     <pre
                       style={{
                         whiteSpace: "pre-wrap",
@@ -849,9 +803,7 @@ export default function Page() {
                     <div style={{ height: 12 }} />
 
                     {/* Draft Email from Notes */}
-                    <div style={{ fontWeight: 900, fontSize: 13, marginBottom: 8 }}>
-                      Draft Email from Notes
-                    </div>
+                    <div style={{ fontWeight: 900, fontSize: 13, marginBottom: 8 }}>Draft Email from Notes</div>
 
                     <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
                       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>

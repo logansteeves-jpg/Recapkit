@@ -22,13 +22,16 @@ export type Session = {
   objective: string;
   rawNotes: string;
 
-  // NEW: notes added after the meeting (Past mode only)
+  // Notes added after the meeting (used in Past mode)
   postMeetingNotes?: string;
 
   outputs: Outputs;
 
-  // NEW: local session history checkpoints (Pause meeting / clear / etc.)
+  // Local session history checkpoints (Pause meeting / Clear / etc.)
   checkpoints?: SessionCheckpoint[];
+
+  // For Undo/Redo support (Redo stack is separate from checkpoints)
+  redoStack?: SessionCheckpoint[];
 
   createdAt: number;
   updatedAt: number;
@@ -69,7 +72,7 @@ export function saveSessions(sessions: Session[]) {
 
 /**
  * Default new sessions to CURRENT.
- * This matches the product direction: you start in Current, then end meeting to Past.
+ * This matches product direction: you start in Current, then end meeting to Past.
  */
 export function createSession(): Session {
   const now = Date.now();
@@ -83,6 +86,7 @@ export function createSession(): Session {
     postMeetingNotes: "",
     outputs: { actionItems: "", summary: "", email: "" },
     checkpoints: [],
+    redoStack: [],
     createdAt: now,
     updatedAt: now,
   };

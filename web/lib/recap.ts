@@ -1,12 +1,11 @@
 // web/lib/recap.ts
 
 export type ActionItem = {
-  text: string;     // the action itself (cleaned)
-  owner?: string;   // best guess
-  due?: string;     // best guess
-  notes?: string;   // extra instruction like "contact Jackie when done"
+  text: string; // the action itself (cleaned)
+  owner?: string; // best guess
+  due?: string; // best guess
+  notes?: string; // extra instruction like "contact Jackie when done"
 };
-
 
 export type ActionIssue = {
   type: "missingOwner" | "missingDueDate" | "vague";
@@ -23,7 +22,7 @@ function normalizeLines(raw: string): string[] {
 export function parseBullets(rawNotes: string): string[] {
   const lines = normalizeLines(rawNotes);
 
-  // Treat any line as a “bullet” for now. (Later: timestamps + quick marks)
+  // Treat any line as a "bullet" for now. (Later: timestamps + quick marks)
   return lines.map((l) => {
     // Strip leading bullet markers like "-", "*", "•", "1.", etc.
     return l.replace(/^(\*|-|•|\d+\.)\s+/, "");
@@ -57,20 +56,21 @@ export function parseActionItems(bullets: string[]): ActionItem[] {
     const iso = text.match(/\b\d{4}-\d{2}-\d{2}\b/);
     if (iso) return iso[0];
 
-    // simple relative / weekday
+    // simple relative tokens
     const dueTokens = [
       "today",
       "tomorrow",
-      "next week",
       "this week",
+      "next week",
       "end of day",
       "eod",
       "eow",
     ];
     for (const t of dueTokens) {
-      if (lower.includes(t)) return t.toUpperCase() === t ? t : t;
+      if (lower.includes(t)) return t;
     }
 
+    // weekday mention
     const weekday = text.match(/\b(mon|tue|wed|thu|fri|sat|sun)(day)?\b/i);
     if (weekday) return weekday[0];
 
@@ -104,14 +104,15 @@ export function parseActionItems(bullets: string[]): ActionItem[] {
   }
 
   function extractNotes(original: string): string | undefined {
-    // Anything after " - " or " — " or " note:" becomes notes
+    // Anything after " - " becomes notes
     const dashSplit = original.split(" - ");
     if (dashSplit.length > 1) return dashSplit.slice(1).join(" - ").trim();
 
+    // "note: ..."
     const noteTag = original.match(/\bnote:\s*(.+)$/i);
     if (noteTag) return noteTag[1].trim();
 
-    // parenthetical notes
+    // parenthetical notes at end: "(...)".
     const paren = original.match(/\(([^)]+)\)\s*$/);
     if (paren) return paren[1].trim();
 
@@ -134,35 +135,34 @@ export function parseActionItems(bullets: string[]): ActionItem[] {
     });
 }
 
-
 export function detectActionIssues(items: ActionItem[]): ActionIssue[] {
   const issues: ActionIssue[] = [];
 
   for (const item of items) {
-    const text = item.text.toLowerCase();
+    const textLower = item.text.toLowerCase();
 
-    // Owner heuristic
+    // Prefer extracted signals first, fallback to text heuristics
     const hasOwner =
-      text.includes("@") ||
-      text.includes("owner:") ||
-      text.includes("assigned to") ||
-      text.includes("i will") ||
-      text.includes("we will");
+      Boolean(item.owner) ||
+      textLower.includes("@") ||
+      textLower.includes("owner:") ||
+      textLower.includes("assigned to") ||
+      textLower.includes("i will") ||
+      textLower.includes("we will");
 
-    // Due date heuristic
     const hasDue =
-      text.includes("today") ||
-      text.includes("tomorrow") ||
-      text.includes("next week") ||
-      /\b(mon|tue|wed|thu|fri|sat|sun)\b/i.test(text) ||
-      /\b\d{4}-\d{2}-\d{2}\b/.test(text);
+      Boolean(item.due) ||
+      textLower.includes("today") ||
+      textLower.includes("tomorrow") ||
+      textLower.includes("next week") ||
+      /\b(mon|tue|wed|thu|fri|sat|sun)\b/i.test(item.text) ||
+      /\b\d{4}-\d{2}-\d{2}\b/.test(item.text);
 
-    // Vague heuristic
     const vague =
-      text.length < 20 ||
-      text.includes("look into") ||
-      text.includes("check on") ||
-      text.includes("touch base");
+      item.text.length < 20 ||
+      textLower.includes("look into") ||
+      textLower.includes("check on") ||
+      textLower.includes("touch base");
 
     if (!hasOwner) {
       issues.push({
@@ -193,7 +193,7 @@ export function detectActionIssues(items: ActionItem[]): ActionIssue[] {
  * IMPORTANT:
  * - We removed Pro Mode from the product for now.
  * - This function stays backward-compatible so older page.tsx calls
- *   that pass a 3rd argument won’t break.
+ *   that pass a 3rd argument won't break.
  */
 export function formatActionItems(
   items: ActionItem[],
@@ -210,6 +210,7 @@ export function formatActionItems(
 
     const owner = item.owner ? item.owner : "Unassigned";
     const due = item.due ? item.due : "No due date";
+
     lines.push(`   - Owner: ${owner}`);
     lines.push(`   - Due: ${due}`);
 
@@ -233,7 +234,6 @@ export function formatActionItems(
   return lines.join("\n").trim();
 }
 
-
 export function makeSummary(bullets: string[]): string {
   if (!bullets.length) return "No notes provided.";
 
@@ -243,7 +243,9 @@ export function makeSummary(bullets: string[]): string {
   const lines: string[] = [];
   lines.push("Summary\n");
   for (const b of top) lines.push(`- ${b}`);
-  if (restCount) lines.push(`\n(${restCount} additional note${restCount === 1 ? "" : "s"})`);
+  if (restCount) {
+    lines.push(`\n(${restCount} additional note${restCount === 1 ? "" : "s"})`);
+  }
 
   return lines.join("\n");
 }
@@ -251,12 +253,19 @@ export function makeSummary(bullets: string[]): string {
 export function makeEmailDraft(
   bullets: string[],
   opts?: {
-    type?: "followUp" | "question" | "actionComplete" | "actionClarification" | "concern";
+    type?:
+      | "followUp"
+      | "question"
+      | "actionComplete"
+      | "actionClarification"
+      | "concern";
     tone?: "professional" | "warm" | "friendlyProfessional" | "casual";
   }
 ): string {
-  const type = opts?.type ?? "followUp";
-  const tone = opts?.tone ?? "professional";
+  const type =
+    opts?.type ?? "followUp";
+  const tone =
+    opts?.tone ?? "professional";
 
   const bodyLines = bullets.slice(0, 6).map((b) => `- ${b}`);
 

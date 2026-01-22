@@ -1,3 +1,4 @@
+import "./globals.css";
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 
@@ -5,9 +6,7 @@ export const metadata: Metadata = {
   title: "RecapKit",
   description: "Turn meetings into actionable, accountable follow-ups.",
   applicationName: "RecapKit",
-  icons: [
-    { rel: "icon", url: "/favicon.ico" },
-  ],
+  icons: [{ rel: "icon", url: "/favicon.ico" }],
 };
 
 export const viewport: Viewport = {
@@ -23,8 +22,6 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         style={{
           margin: 0,
           padding: 0,
-          background: "#fff",
-          color: "#111",
           fontFamily:
             "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, Apple Color Emoji, Segoe UI Emoji",
         }}
