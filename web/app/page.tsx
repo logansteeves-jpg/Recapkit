@@ -45,6 +45,27 @@ export default function Page() {
   // draft inputs for creating
   const [newFolderName, setNewFolderName] = useState("");
 
+  // email controls (UI only for now)
+  const [emailType, setEmailType] = useState<
+    "followUp" | "question" | "actionComplete" | "actionClarification" | "concern"
+  >("followUp");
+
+  const [emailTone, setEmailTone] = useState<
+    "professional" | "warm" | "friendlyProfessional" | "casual"
+  >("professional");
+
+  function generateArtifactsFromRawNotes(rawNotes: string) {
+    const bullets: string[] = parseBullets(rawNotes);
+    const items = parseActionItems(bullets);
+    const issues = detectActionIssues(items);
+
+    return {
+      summary: makeSummary(bullets),
+      actionItems: formatActionItems(items, issues),
+      email: makeEmailDraft(bullets, { type: emailType, tone: emailTone }),
+    };
+  }
+
   // load once
   useEffect(() => {
     setFolders(loadFolders());
@@ -120,18 +141,6 @@ export default function Page() {
     setSessions((prev) => updateSession(prev, updated));
   }
 
-  function generateArtifactsFromRawNotes(rawNotes: string) {
-    const bullets: string[] = parseBullets(rawNotes);
-    const items = parseActionItems(bullets);
-    const issues = detectActionIssues(items);
-
-    return {
-      summary: makeSummary(bullets),
-      actionItems: formatActionItems(items, issues),
-      email: makeEmailDraft(bullets),
-    };
-  }
-
   function handleGenerateNow() {
     if (!currentSession) return;
     const outputs = generateArtifactsFromRawNotes(currentSession.rawNotes);
@@ -140,7 +149,6 @@ export default function Page() {
 
   function handleEndMeeting() {
     if (!currentSession) return;
-    // Convert current -> past and auto-generate artifacts
     const outputs = generateArtifactsFromRawNotes(currentSession.rawNotes);
     patchSession({ mode: "past", outputs });
   }
@@ -375,16 +383,18 @@ export default function Page() {
           {!currentSession ? (
             <div style={{ color: "#b00" }}>Session not found.</div>
           ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "320px 1fr", gap: 14 }}>
+            <div className="recap-session-grid">
               {/* Left: context list */}
               <aside
-                style={{
-                  border: "1px solid #eee",
-                  borderRadius: 14,
-                  padding: 14,
-                  height: "fit-content",
-                }}
-              >
+  className="recap-session-sidebar"
+  style={{
+    border: "1px solid #eee",
+    borderRadius: 14,
+    padding: 14,
+    height: "fit-content",
+  }}
+>
+
                 <div style={{ fontWeight: 900, fontSize: 14 }}>
                   {currentSession.folderId
                     ? `File: ${folders.find((f) => f.id === currentSession.folderId)?.name ?? "Unknown"}`
@@ -501,7 +511,7 @@ export default function Page() {
                   </div>
                 </div>
 
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                <div className="recap-home-grid" style={{ marginTop: 16 }}>
                   {/* Raw Notes */}
                   <div
                     style={{
@@ -580,29 +590,133 @@ export default function Page() {
                   >
                     <div style={{ fontWeight: 900, marginBottom: 8 }}>Output</div>
 
+                    {/* Summary */}
+                    <div style={{ fontWeight: 900, fontSize: 13, marginBottom: 6 }}>
+                      Summary
+                    </div>
                     <pre
                       style={{
                         whiteSpace: "pre-wrap",
                         border: "1px solid #ddd",
                         borderRadius: 12,
                         padding: 12,
-                        minHeight: 260,
+                        minHeight: 120,
                         fontSize: 13,
                         lineHeight: 1.35,
                         background: "#fafafa",
+                        margin: 0,
                       }}
                     >
-                      {currentSession.outputs.summary ||
-                      currentSession.outputs.actionItems ||
-                      currentSession.outputs.email
-                        ? [
-                            currentSession.outputs.summary,
-                            "",
-                            currentSession.outputs.actionItems,
-                            "",
-                            currentSession.outputs.email,
-                          ].join("\n").trim()
-                        : "Click Generate to see results here."}
+                      {currentSession.outputs.summary?.trim()
+                        ? currentSession.outputs.summary
+                        : "Click Generate to create a summary."}
+                    </pre>
+
+                    <div style={{ height: 12 }} />
+
+                    {/* Action Items */}
+                    <div style={{ fontWeight: 900, fontSize: 13, marginBottom: 6 }}>
+                      Action Items (from notes)
+                    </div>
+                    <pre
+                      style={{
+                        whiteSpace: "pre-wrap",
+                        border: "1px solid #ddd",
+                        borderRadius: 12,
+                        padding: 12,
+                        minHeight: 140,
+                        fontSize: 13,
+                        lineHeight: 1.35,
+                        background: "#fafafa",
+                        margin: 0,
+                      }}
+                    >
+                      {currentSession.outputs.actionItems?.trim()
+                        ? currentSession.outputs.actionItems
+                        : "Click Generate to extract action items."}
+                    </pre>
+
+                    <div style={{ height: 12 }} />
+
+                    {/* Draft Email from Notes */}
+                    <div style={{ fontWeight: 900, fontSize: 13, marginBottom: 8 }}>
+                      Draft Email from Notes
+                    </div>
+
+                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <span style={{ color: "#666", fontSize: 13 }}>Type</span>
+                        <select
+                          value={emailType}
+                          onChange={(e) => setEmailType(e.target.value as any)}
+                          style={{
+                            padding: "10px 12px",
+                            borderRadius: 10,
+                            border: "1px solid #ddd",
+                            background: "#fff",
+                          }}
+                        >
+                          <option value="followUp">Follow-up</option>
+                          <option value="question">Question</option>
+                          <option value="actionComplete">Action item completion</option>
+                          <option value="actionClarification">Action item clarification</option>
+                          <option value="concern">Concern</option>
+                        </select>
+                      </div>
+
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <span style={{ color: "#666", fontSize: 13 }}>Tone</span>
+                        <select
+                          value={emailTone}
+                          onChange={(e) => setEmailTone(e.target.value as any)}
+                          style={{
+                            padding: "10px 12px",
+                            borderRadius: 10,
+                            border: "1px solid #ddd",
+                            background: "#fff",
+                          }}
+                        >
+                          <option value="professional">Professional</option>
+                          <option value="warm">Warm</option>
+                          <option value="friendlyProfessional">Friendly professional</option>
+                          <option value="casual">Casual</option>
+                        </select>
+                      </div>
+
+                      <button
+                        onClick={handleGenerateNow}
+                        disabled={!currentSession.rawNotes.trim()}
+                        style={{
+                          padding: "10px 14px",
+                          borderRadius: 10,
+                          border: "1px solid #111",
+                          background: currentSession.rawNotes.trim() ? "#111" : "#eee",
+                          color: currentSession.rawNotes.trim() ? "#fff" : "#777",
+                          cursor: currentSession.rawNotes.trim() ? "pointer" : "not-allowed",
+                          fontWeight: 900,
+                        }}
+                        title="Uses the current Type + Tone selections"
+                      >
+                        Generate Email Draft
+                      </button>
+                    </div>
+
+                    <pre
+                      style={{
+                        whiteSpace: "pre-wrap",
+                        border: "1px solid #ddd",
+                        borderRadius: 12,
+                        padding: 12,
+                        minHeight: 160,
+                        fontSize: 13,
+                        lineHeight: 1.35,
+                        background: "#fafafa",
+                        margin: 0,
+                      }}
+                    >
+                      {currentSession.outputs.email?.trim()
+                        ? currentSession.outputs.email
+                        : "Pick a Type + Tone, then Generate Email Draft."}
                     </pre>
                   </div>
                 </div>
