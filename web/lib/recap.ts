@@ -12,6 +12,20 @@ export type ActionIssue = {
   message: string;
 };
 
+export type EmailType =
+  | "followUp"
+  | "question"
+  | "actionComplete"
+  | "actionClarification"
+  | "concern";
+
+export type EmailTone = "professional" | "warm" | "friendlyProfessional" | "casual";
+
+export type MakeEmailDraftOptions = {
+  type?: EmailType;
+  tone?: EmailTone;
+};
+
 function normalizeLines(raw: string): string[] {
   return raw
     .split("\n")
@@ -190,15 +204,14 @@ export function detectActionIssues(items: ActionItem[]): ActionIssue[] {
 }
 
 /**
- * IMPORTANT:
- * - We removed Pro Mode from the product for now.
- * - This function stays backward-compatible so older page.tsx calls
- *   that pass a 3rd argument won't break.
+ * Backward-compatible signature:
+ * - Some older callers passed a 3rd arg (legacy pro mode).
+ * - We ignore it but keep it so nothing breaks.
  */
 export function formatActionItems(
   items: ActionItem[],
   issues: ActionIssue[],
-  _legacyProMode?: boolean
+  _legacyThirdArg?: unknown
 ): string {
   if (!items.length) return "No obvious action items found.";
 
@@ -250,26 +263,13 @@ export function makeSummary(bullets: string[]): string {
   return lines.join("\n");
 }
 
-export function makeEmailDraft(
-  bullets: string[],
-  opts?: {
-    type?:
-      | "followUp"
-      | "question"
-      | "actionComplete"
-      | "actionClarification"
-      | "concern";
-    tone?: "professional" | "warm" | "friendlyProfessional" | "casual";
-  }
-): string {
-  const type =
-    opts?.type ?? "followUp";
-  const tone =
-    opts?.tone ?? "professional";
+export function makeEmailDraft(bullets: string[], opts?: MakeEmailDraftOptions): string {
+  const type: EmailType = opts?.type ?? "followUp";
+  const tone: EmailTone = opts?.tone ?? "professional";
 
   const bodyLines = bullets.slice(0, 6).map((b) => `- ${b}`);
 
-  const subjectByType: Record<typeof type, string> = {
+  const subjectByType: Record<EmailType, string> = {
     followUp: "Follow-up from our meeting",
     question: "Quick question from our meeting",
     actionComplete: "Update: action item completed",
@@ -277,21 +277,21 @@ export function makeEmailDraft(
     concern: "Concern / follow-up from our meeting",
   };
 
-  const greetingByTone: Record<typeof tone, string> = {
+  const greetingByTone: Record<EmailTone, string> = {
     professional: "Hi,",
     warm: "Hi there,",
     friendlyProfessional: "Hi team,",
     casual: "Hey,",
   };
 
-  const closingByTone: Record<typeof tone, string> = {
+  const closingByTone: Record<EmailTone, string> = {
     professional: "Thanks,",
     warm: "Thanks so much,",
     friendlyProfessional: "Thanks!",
     casual: "Thanks,",
   };
 
-  const introByType: Record<typeof type, string> = {
+  const introByType: Record<EmailType, string> = {
     followUp: "Here are the key points from our discussion:",
     question: "I had a quick question coming out of our discussion:",
     actionComplete: "Quick update - we completed the following:",

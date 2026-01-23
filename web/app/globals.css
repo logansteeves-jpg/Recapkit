@@ -1,17 +1,23 @@
 @import "tailwindcss";
 
+/* -------------------- CSS Variables -------------------- */
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
 }
 
+/* Tailwind theme bridge (safe to keep even if partially unused) */
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto,
+    Helvetica, Arial, Apple Color Emoji, Segoe UI Emoji;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
 }
 
+/* Dark mode */
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;
@@ -19,14 +25,29 @@
   }
 }
 
+/* -------------------- Global Base Styles -------------------- */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-/* -------------------- RecapKit responsive layout helpers -------------------- */
+/* -------------------- RecapKit Layout Helpers -------------------- */
 
+/* Main session layout (sidebar + editor/output) */
 .recap-session-grid {
   display: grid;
   grid-template-columns: 320px 1fr;
@@ -34,6 +55,7 @@ body {
   align-items: start;
 }
 
+/* Home screen two-column layout */
 .recap-home-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -41,6 +63,7 @@ body {
   align-items: start;
 }
 
+/* Notes / Output split (kept for future use) */
 .recap-notes-output-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -48,12 +71,13 @@ body {
   align-items: start;
 }
 
-/* Sidebar is styled inline, this just helps control behavior on mobile */
+/* Sidebar is styled inline; this just keeps stacking sane */
 .recap-session-sidebar {
   height: fit-content;
 }
 
-/* Tablet + mobile */
+/* -------------------- Responsive -------------------- */
+
 @media (max-width: 980px) {
   .recap-home-grid {
     grid-template-columns: 1fr;
@@ -67,9 +91,9 @@ body {
     grid-template-columns: 1fr;
   }
 
-  /* Optional: make the left sidebar not feel weird when stacked */
+  /* Stack sidebar under main content on mobile */
   .recap-session-sidebar {
-    order: 2; /* push sidebar under editor/output */
+    order: 2;
   }
 
   .recap-session-main {

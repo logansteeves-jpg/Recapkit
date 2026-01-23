@@ -21,21 +21,11 @@ import {
   type Folder,
   type Session,
   type SortMode,
+  type SessionCheckpoint,
+  type CheckpointReason,
 } from "../lib/sessionStore";
 
-type Screen =
-  | { name: "home" }
-  | { name: "session"; sessionId: string };
-
-// Local-only type so page.tsx compiles even if sessionStore.ts
-// does not yet declare checkpoints/redoStack/postMeetingNotes.
-type SessionCheckpoint = {
-  id: string;
-  createdAt: number;
-  rawNotes: string;
-  objective: string;
-  outputs: { actionItems: string; summary: string; email: string };
-};
+type Screen = { name: "home" } | { name: "session"; sessionId: string };
 
 function formatDate(ts: number) {
   try {
@@ -45,6 +35,49 @@ function formatDate(ts: number) {
   }
 }
 
+function checkpointCoreEqual(a: SessionCheckpoint, b: SessionCheckpoint) {
+  return (
+    a.rawNotes === b.rawNotes &&
+    a.objective === b.objective &&
+    a.outputs.actionItems === b.outputs.actionItems &&
+    a.outputs.summary === b.outputs.summary &&
+    a.outputs.email === b.outputs.email
+  );
+}
+
+function InSessionBadge() {
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "4px 8px",
+        borderRadius: 999,
+        border: "1px solid #f1d08a",
+        background: "#fff8e6",
+        color: "#6a4b00",
+        fontSize: 12,
+        fontWeight: 800,
+        lineHeight: 1,
+        whiteSpace: "nowrap",
+      }}
+      title="Meeting still in session"
+    >
+      <span
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: 999,
+          background: "#f1b72a",
+          display: "inline-block",
+        }}
+      />
+      In session
+    </span>
+  );
+}
+
 export default function Page() {
   const [screen, setScreen] = useState<Screen>({ name: "home" });
 
@@ -52,10 +85,8 @@ export default function Page() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sortMode, setSortMode] = useState<SortMode>("updated");
 
-  // draft inputs for creating
   const [newFolderName, setNewFolderName] = useState("");
 
-  // email controls (UI only for now)
   const [emailType, setEmailType] = useState<
     "followUp" | "question" | "actionComplete" | "actionClarification" | "concern"
   >("followUp");
@@ -64,13 +95,17 @@ export default function Page() {
     "professional" | "warm" | "friendlyProfessional" | "casual"
   >("professional");
 
-  // load once
+  // Module 3 (partial): Past raw notes edit warning UX
+  const [showPastEditConfirm, setShowPastEditConfirm] = useState(false);
+  const [isEditingPastRawNotes, setIsEditingPastRawNotes] = useState(false);
+  const [pastEditDraft, setPastEditDraft] = useState("");
+  const [pastEditOriginal, setPastEditOriginal] = useState("");
+
   useEffect(() => {
     setFolders(loadFolders());
     setSessions(loadSessions());
   }, []);
 
-  // persist
   useEffect(() => {
     saveFolders(folders);
   }, [folders]);
@@ -104,11 +139,20 @@ export default function Page() {
     return sessions.find((s) => s.id === screen.sessionId) ?? null;
   }, [screen, sessions]);
 
+  function resetPastEditUi() {
+    setShowPastEditConfirm(false);
+    setIsEditingPastRawNotes(false);
+    setPastEditDraft("");
+    setPastEditOriginal("");
+  }
+
   function openSession(sessionId: string) {
+    resetPastEditUi();
     setScreen({ name: "session", sessionId });
   }
 
   function goHome() {
+    resetPastEditUi();
     setScreen({ name: "home" });
   }
 
@@ -133,25 +177,82 @@ export default function Page() {
     openSession(updated.id);
   }
 
-  function patchSession(patch: Partial<Session> & Record<string, any>) {
+  function getCheckpoints(s: Session): SessionCheckpoint[] {
+    return Array.isArray(s.checkpoints) ? s.checkpoints : [];
+  }
+
+  function getRedoStack(s: Session): SessionCheckpoint[] {
+    return Array.isArray(s.redoStack) ? s.redoStack : [];
+  }
+
+  function makeCheckpoint(reason: CheckpointReason, s: Session): SessionCheckpoint {
+    return {
+      rawNotes: s.rawNotes,
+      objective: s.objective,
+      outputs: s.outputs,
+      timestamp: Date.now(),
+      reason,
+    };
+  }
+
+  const MAX_CHECKPOINTS = 50;
+
+  function pushCheckpoint(session: Session, checkpoint: SessionCheckpoint) {
+    const existing = getCheckpoints(session);
+
+    const last = existing[existing.length - 1];
+    if (last && checkpointCoreEqual(last, checkpoint)) return existing;
+
+    const next = [...existing, checkpoint];
+    return next.length > MAX_CHECKPOINTS ? next.slice(next.length - MAX_CHECKPOINTS) : next;
+  }
+
+  function doDestructive(
+    reason: CheckpointReason,
+    mutate: (base: Session) => Partial<Session> & Record<string, any>
+  ) {
     if (!currentSession) return;
-    const updated: Session = {
+
+    const cp = makeCheckpoint(reason, currentSession);
+    const nextCheckpoints = pushCheckpoint(currentSession, cp);
+
+    const updated: any = {
+      ...currentSession,
+      checkpoints: nextCheckpoints,
+      redoStack: [],
+      ...mutate(currentSession),
+      updatedAt: Date.now(),
+    };
+
+    setSessions((prev) => updateSession(prev, updated as Session));
+  }
+
+  function patchSession(patch: Partial<Session> & Record<string, any>, opts?: { clearRedo?: boolean }) {
+    if (!currentSession) return;
+
+    const clearRedo = opts?.clearRedo ?? false;
+
+    const updated: any = {
       ...currentSession,
       ...(patch as any),
       updatedAt: Date.now(),
     };
-    setSessions((prev) => updateSession(prev, updated));
+
+    if (clearRedo) updated.redoStack = [];
+
+    setSessions((prev) => updateSession(prev, updated as Session));
   }
 
   function safeMakeEmailDraft(bullets: string[]) {
-    // Some versions of recap.ts accept only (bullets)
-    // and newer versions accept (bullets, { type, tone }).
-    // Casting avoids TS mismatch and keeps your UI stable.
     return (makeEmailDraft as any)(bullets, { type: emailType, tone: emailTone }) as string;
   }
 
-  function generateArtifactsFromRawNotes(rawNotes: string) {
-    const bullets: string[] = parseBullets(rawNotes);
+  function generateArtifactsFromRawNotes(rawNotes: string, postMeetingNotes?: string) {
+    const merged = postMeetingNotes?.trim()
+      ? `${rawNotes}\n\nPost-Meeting Notes:\n${postMeetingNotes.trim()}`
+      : rawNotes;
+
+    const bullets: string[] = parseBullets(merged);
     const items = parseActionItems(bullets);
     const issues = detectActionIssues(items);
 
@@ -162,59 +263,71 @@ export default function Page() {
     };
   }
 
+  // Avoid hijacking native textarea undo
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (screen.name !== "session") return;
+      if (!currentSession) return;
+
+      const el = document.activeElement as HTMLElement | null;
+      const tag = el?.tagName?.toLowerCase();
+      const isTypingField = tag === "textarea" || tag === "input" || (el as any)?.isContentEditable;
+
+      if (isTypingField) return;
+
+      const isMac = navigator.platform.toLowerCase().includes("mac");
+      const mod = isMac ? e.metaKey : e.ctrlKey;
+      if (!mod) return;
+
+      if (e.key.toLowerCase() === "z" && !e.shiftKey) {
+        e.preventDefault();
+        handleUndo();
+        return;
+      }
+
+      if ((e.key.toLowerCase() === "z" && e.shiftKey) || (!isMac && e.key.toLowerCase() === "y")) {
+        e.preventDefault();
+        handleRedo();
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, currentSession, sessions]);
+
   function handleGenerateNow() {
     if (!currentSession) return;
-    const outputs = generateArtifactsFromRawNotes(currentSession.rawNotes);
-    patchSession({ outputs });
-  }
 
-  function snapshotCurrentSession(): SessionCheckpoint | null {
-    if (!currentSession) return null;
-    return {
-      id: Math.random().toString(36).slice(2, 10),
-      createdAt: Date.now(),
-      rawNotes: currentSession.rawNotes,
-      objective: currentSession.objective,
-      outputs: currentSession.outputs,
-    };
-  }
-
-  function handlePauseMeeting() {
-    if (!currentSession) return;
-
-    const checkpoint = snapshotCurrentSession();
-    if (!checkpoint) return;
-
-    const checkpoints = ((currentSession as any).checkpoints ?? []) as SessionCheckpoint[];
-
-    const updated: any = {
-      ...currentSession,
-      checkpoints: [...checkpoints, checkpoint],
-      // Any new "commit" kills redo history (Word/GDocs behavior)
-      redoStack: [],
-      updatedAt: Date.now(),
-    };
-
-    setSessions((prev) => updateSession(prev, updated as Session));
+    doDestructive("generate", (base) => {
+      const postMeetingNotes = (base.postMeetingNotes ?? "") as string;
+      const outputs = generateArtifactsFromRawNotes(base.rawNotes, postMeetingNotes);
+      return { outputs };
+    });
   }
 
   function handleEndMeeting() {
     if (!currentSession) return;
-    const outputs = generateArtifactsFromRawNotes(currentSession.rawNotes);
-    patchSession({ mode: "past", outputs });
+
+    doDestructive("end", (base) => {
+      const postMeetingNotes = (base.postMeetingNotes ?? "") as string;
+      const outputs = generateArtifactsFromRawNotes(base.rawNotes, postMeetingNotes);
+      return { mode: "past", outputs };
+    });
+
+    resetPastEditUi();
   }
 
   function handleUndo() {
     if (!currentSession) return;
 
-    const checkpoints = ((currentSession as any).checkpoints ?? []) as SessionCheckpoint[];
+    const checkpoints = getCheckpoints(currentSession);
     if (checkpoints.length === 0) return;
 
     const previous = checkpoints[checkpoints.length - 1];
-    const nowSnap = snapshotCurrentSession();
-    if (!nowSnap) return;
+    const nowSnap = makeCheckpoint("manual", currentSession);
 
-    const redoStack = ((currentSession as any).redoStack ?? []) as SessionCheckpoint[];
+    const redoStack = getRedoStack(currentSession);
 
     const updated: any = {
       ...currentSession,
@@ -226,20 +339,20 @@ export default function Page() {
       updatedAt: Date.now(),
     };
 
+    resetPastEditUi();
     setSessions((prev) => updateSession(prev, updated as Session));
   }
 
   function handleRedo() {
     if (!currentSession) return;
 
-    const redoStack = ((currentSession as any).redoStack ?? []) as SessionCheckpoint[];
+    const redoStack = getRedoStack(currentSession);
     if (redoStack.length === 0) return;
 
     const next = redoStack[redoStack.length - 1];
-    const nowSnap = snapshotCurrentSession();
-    if (!nowSnap) return;
+    const nowSnap = makeCheckpoint("manual", currentSession);
 
-    const checkpoints = ((currentSession as any).checkpoints ?? []) as SessionCheckpoint[];
+    const checkpoints = getCheckpoints(currentSession);
 
     const updated: any = {
       ...currentSession,
@@ -251,28 +364,64 @@ export default function Page() {
       updatedAt: Date.now(),
     };
 
+    resetPastEditUi();
     setSessions((prev) => updateSession(prev, updated as Session));
   }
+
+  function handleClear() {
+    if (!currentSession) return;
+
+    doDestructive("clear", () => {
+      return {
+        rawNotes: "",
+        objective: "",
+        outputs: { actionItems: "", summary: "", email: "" },
+      };
+    });
+
+    resetPastEditUi();
+  }
+
+  function requestEnablePastEdit() {
+    if (!currentSession) return;
+    if (currentSession.mode !== "past") return;
+
+    setPastEditOriginal(currentSession.rawNotes);
+    setPastEditDraft(currentSession.rawNotes);
+    setShowPastEditConfirm(true);
+  }
+
+  function confirmEnablePastEdit() {
+    setShowPastEditConfirm(false);
+    setIsEditingPastRawNotes(true);
+  }
+
+  function cancelPastEdit() {
+    resetPastEditUi();
+  }
+
+  function savePastEdit() {
+    if (!currentSession) return;
+    if (currentSession.mode !== "past") return;
+
+    doDestructive("manual", (base) => {
+      const postMeetingNotes = (base.postMeetingNotes ?? "") as string;
+      const outputs = generateArtifactsFromRawNotes(pastEditDraft, postMeetingNotes);
+      return { rawNotes: pastEditDraft, outputs };
+    });
+
+    resetPastEditUi();
+  }
+
+  const checkpointsCount = currentSession ? getCheckpoints(currentSession).length : 0;
+  const redoCount = currentSession ? getRedoStack(currentSession).length : 0;
 
   const headerSubtitle = "Turning your meetings into actionable and accountable follow-ups";
 
   return (
-    <main
-      style={{
-        maxWidth: 1100,
-        margin: "0 auto",
-        padding: 18,
-      }}
-    >
+    <main style={{ maxWidth: 1100, margin: "0 auto", padding: 18 }}>
       {/* Header */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "flex-end",
-          justifyContent: "space-between",
-          gap: 12,
-        }}
-      >
+      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 12 }}>
         <div>
           <div style={{ fontSize: 46, fontWeight: 800, lineHeight: 1.0 }}>RecapKit</div>
           <div style={{ marginTop: 6, color: "#666", fontSize: 14 }}>{headerSubtitle}</div>
@@ -411,7 +560,10 @@ export default function Page() {
                                     cursor: "pointer",
                                   }}
                                 >
-                                  <div style={{ fontWeight: 800 }}>{s.title}</div>
+                                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                                    <div style={{ fontWeight: 800 }}>{s.title}</div>
+                                    {s.mode === "current" ? <InSessionBadge /> : null}
+                                  </div>
                                   <div style={{ color: "#777", fontSize: 12 }}>{formatDate(s.updatedAt)}</div>
                                 </button>
                               ))
@@ -446,7 +598,10 @@ export default function Page() {
                         cursor: "pointer",
                       }}
                     >
-                      <div style={{ fontWeight: 800 }}>{s.title}</div>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                        <div style={{ fontWeight: 800 }}>{s.title}</div>
+                        {s.mode === "current" ? <InSessionBadge /> : null}
+                      </div>
                       <div style={{ color: "#777", fontSize: 12 }}>{formatDate(s.updatedAt)}</div>
                     </button>
                   ))
@@ -498,7 +653,10 @@ export default function Page() {
                             cursor: "pointer",
                           }}
                         >
-                          <div style={{ fontWeight: 800 }}>{s.title}</div>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                            <div style={{ fontWeight: 800 }}>{s.title}</div>
+                            {!active && s.mode === "current" ? <InSessionBadge /> : null}
+                          </div>
                           <div style={{ opacity: 0.8, fontSize: 12 }}>{formatDate(s.updatedAt)}</div>
                         </button>
                       );
@@ -534,7 +692,7 @@ export default function Page() {
                   <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                     <input
                       value={currentSession.title}
-                      onChange={(e) => patchSession({ title: e.target.value })}
+                      onChange={(e) => patchSession({ title: e.target.value }, { clearRedo: true })}
                       placeholder="Enter name for session"
                       style={{
                         flex: 1,
@@ -551,43 +709,27 @@ export default function Page() {
                     </div>
 
                     {currentSession.mode === "current" ? (
-                      <div style={{ display: "flex", gap: 10 }}>
-                        <button
-                          onClick={handlePauseMeeting}
-                          style={{
-                            padding: "10px 12px",
-                            borderRadius: 12,
-                            border: "1px solid #ddd",
-                            background: "#fff",
-                            cursor: "pointer",
-                            fontWeight: 800,
-                          }}
-                        >
-                          Pause Meeting
-                        </button>
-
-                        <button
-                          onClick={handleEndMeeting}
-                          style={{
-                            padding: "10px 12px",
-                            borderRadius: 12,
-                            border: "1px solid #111",
-                            background: "#111",
-                            color: "#fff",
-                            cursor: "pointer",
-                            fontWeight: 900,
-                          }}
-                        >
-                          End Meeting
-                        </button>
-                      </div>
+                      <button
+                        onClick={handleEndMeeting}
+                        style={{
+                          padding: "10px 12px",
+                          borderRadius: 12,
+                          border: "1px solid #111",
+                          background: "#111",
+                          color: "#fff",
+                          cursor: "pointer",
+                          fontWeight: 900,
+                        }}
+                      >
+                        End Meeting
+                      </button>
                     ) : null}
                   </div>
 
                   <div style={{ marginTop: 10 }}>
                     <input
                       value={currentSession.objective}
-                      onChange={(e) => patchSession({ objective: e.target.value })}
+                      onChange={(e) => patchSession({ objective: e.target.value }, { clearRedo: true })}
                       placeholder="Meeting objective (optional)"
                       style={{
                         width: "100%",
@@ -602,14 +744,55 @@ export default function Page() {
                 <div className="recap-home-grid" style={{ marginTop: 16 }}>
                   {/* Raw Notes */}
                   <div style={{ border: "1px solid #eee", borderRadius: 14, padding: 14 }}>
-                    <div style={{ fontWeight: 900, marginBottom: 8 }}>Raw Notes</div>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                      <div style={{ fontWeight: 900 }}>Raw Notes</div>
+
+                      {currentSession.mode === "past" && !isEditingPastRawNotes ? (
+                        <button
+                          onClick={requestEnablePastEdit}
+                          style={{
+                            padding: "8px 10px",
+                            borderRadius: 10,
+                            border: "1px solid #ddd",
+                            background: "#fff",
+                            cursor: "pointer",
+                            fontWeight: 800,
+                            fontSize: 13,
+                          }}
+                        >
+                          Edit Raw Notes
+                        </button>
+                      ) : null}
+                    </div>
+
+                    {currentSession.mode === "past" && isEditingPastRawNotes ? (
+                      <div
+                        style={{
+                          marginTop: 10,
+                          padding: 10,
+                          borderRadius: 12,
+                          border: "1px solid #f1d08a",
+                          background: "#fff8e6",
+                          color: "#6a4b00",
+                          fontSize: 13,
+                          lineHeight: 1.35,
+                        }}
+                      >
+                        <b>Editing Past Raw Notes</b> - you are changing the historical record. Outputs will regenerate
+                        when you save.
+                      </div>
+                    ) : null}
 
                     <textarea
-                      value={currentSession.rawNotes}
-                      readOnly={currentSession.mode === "past"}
+                      value={currentSession.mode === "past" && isEditingPastRawNotes ? pastEditDraft : currentSession.rawNotes}
+                      readOnly={currentSession.mode === "past" && !isEditingPastRawNotes}
                       onChange={(e) => {
-                        if (currentSession.mode === "past") return;
-                        patchSession({ rawNotes: e.target.value });
+                        if (currentSession.mode === "past") {
+                          if (!isEditingPastRawNotes) return;
+                          setPastEditDraft(e.target.value);
+                          return;
+                        }
+                        patchSession({ rawNotes: e.target.value }, { clearRedo: true });
                       }}
                       placeholder="Paste your meeting notes here..."
                       style={{
@@ -621,21 +804,77 @@ export default function Page() {
                         fontSize: 14,
                         lineHeight: 1.4,
                         resize: "vertical",
-                        background: currentSession.mode === "past" ? "#fafafa" : "#fff",
+                        background: currentSession.mode === "past" && !isEditingPastRawNotes ? "#fafafa" : "#fff",
+                        marginTop: 10,
                       }}
                     />
+
+                    {currentSession.mode === "past" && isEditingPastRawNotes ? (
+                      <div style={{ display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
+                        <button
+                          onClick={savePastEdit}
+                          style={{
+                            padding: "10px 14px",
+                            borderRadius: 12,
+                            border: "1px solid #111",
+                            background: "#111",
+                            color: "#fff",
+                            cursor: "pointer",
+                            fontWeight: 900,
+                          }}
+                        >
+                          Save Changes
+                        </button>
+
+                        <button
+                          onClick={() => {
+                            setPastEditDraft(pastEditOriginal);
+                            cancelPastEdit();
+                          }}
+                          style={{
+                            padding: "10px 14px",
+                            borderRadius: 12,
+                            border: "1px solid #ddd",
+                            background: "#fff",
+                            cursor: "pointer",
+                            fontWeight: 800,
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : null}
 
                     <div style={{ display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
                       <button
                         onClick={handleGenerateNow}
-                        disabled={!currentSession.rawNotes.trim()}
+                        disabled={
+                          currentSession.mode === "past" && isEditingPastRawNotes
+                            ? !pastEditDraft.trim()
+                            : !currentSession.rawNotes.trim()
+                        }
                         style={{
                           padding: "10px 14px",
                           borderRadius: 12,
                           border: "1px solid #111",
-                          background: currentSession.rawNotes.trim() ? "#111" : "#eee",
-                          color: currentSession.rawNotes.trim() ? "#fff" : "#777",
-                          cursor: currentSession.rawNotes.trim() ? "pointer" : "not-allowed",
+                          background:
+                            (currentSession.mode === "past" && isEditingPastRawNotes
+                              ? pastEditDraft.trim()
+                              : currentSession.rawNotes.trim())
+                              ? "#111"
+                              : "#eee",
+                          color:
+                            (currentSession.mode === "past" && isEditingPastRawNotes
+                              ? pastEditDraft.trim()
+                              : currentSession.rawNotes.trim())
+                              ? "#fff"
+                              : "#777",
+                          cursor:
+                            (currentSession.mode === "past" && isEditingPastRawNotes
+                              ? pastEditDraft.trim()
+                              : currentSession.rawNotes.trim())
+                              ? "pointer"
+                              : "not-allowed",
                           fontWeight: 900,
                         }}
                       >
@@ -644,75 +883,40 @@ export default function Page() {
 
                       <button
                         onClick={handleUndo}
-                        disabled={(((currentSession as any).checkpoints ?? []) as SessionCheckpoint[]).length === 0}
+                        disabled={checkpointsCount === 0}
                         style={{
                           padding: "10px 14px",
                           borderRadius: 12,
                           border: "1px solid #ddd",
-                          background:
-                            (((currentSession as any).checkpoints ?? []) as SessionCheckpoint[]).length > 0
-                              ? "#fff"
-                              : "#eee",
-                          color:
-                            (((currentSession as any).checkpoints ?? []) as SessionCheckpoint[]).length > 0
-                              ? "#111"
-                              : "#777",
-                          cursor:
-                            (((currentSession as any).checkpoints ?? []) as SessionCheckpoint[]).length > 0
-                              ? "pointer"
-                              : "not-allowed",
+                          background: checkpointsCount > 0 ? "#fff" : "#eee",
+                          color: checkpointsCount > 0 ? "#111" : "#777",
+                          cursor: checkpointsCount > 0 ? "pointer" : "not-allowed",
                           fontWeight: 800,
                         }}
+                        title="Undo last checkpoint"
                       >
                         Undo
                       </button>
 
                       <button
                         onClick={handleRedo}
-                        disabled={(((currentSession as any).redoStack ?? []) as SessionCheckpoint[]).length === 0}
+                        disabled={redoCount === 0}
                         style={{
                           padding: "10px 14px",
                           borderRadius: 12,
                           border: "1px solid #ddd",
-                          background:
-                            (((currentSession as any).redoStack ?? []) as SessionCheckpoint[]).length > 0
-                              ? "#fff"
-                              : "#eee",
-                          color:
-                            (((currentSession as any).redoStack ?? []) as SessionCheckpoint[]).length > 0
-                              ? "#111"
-                              : "#777",
-                          cursor:
-                            (((currentSession as any).redoStack ?? []) as SessionCheckpoint[]).length > 0
-                              ? "pointer"
-                              : "not-allowed",
+                          background: redoCount > 0 ? "#fff" : "#eee",
+                          color: redoCount > 0 ? "#111" : "#777",
+                          cursor: redoCount > 0 ? "pointer" : "not-allowed",
                           fontWeight: 800,
                         }}
+                        title="Redo"
                       >
                         Redo
                       </button>
 
                       <button
-                        onClick={() => {
-                          if (!currentSession) return;
-
-                          const checkpoint = snapshotCurrentSession();
-                          if (!checkpoint) return;
-
-                          const checkpoints = ((currentSession as any).checkpoints ?? []) as SessionCheckpoint[];
-
-                          const updated: any = {
-                            ...currentSession,
-                            checkpoints: [...checkpoints, checkpoint],
-                            redoStack: [], // important: new action clears redo chain
-                            rawNotes: "",
-                            objective: "",
-                            outputs: { actionItems: "", summary: "", email: "" },
-                            updatedAt: Date.now(),
-                          };
-
-                          setSessions((prev) => updateSession(prev, updated as Session));
-                        }}
+                        onClick={handleClear}
                         style={{
                           padding: "10px 14px",
                           borderRadius: 12,
@@ -727,7 +931,7 @@ export default function Page() {
                     </div>
 
                     <div style={{ marginTop: 8, color: "#777", fontSize: 12 }}>
-                      Tip: In <b>Current</b> mode, use “End Meeting” when you’re done to convert to <b>Past</b> and auto-generate outputs.
+                      Tip: In <b>Current</b> mode, your meeting stays <b>in session</b> until you press <b>End Meeting</b>.
                     </div>
 
                     {currentSession.mode === "past" ? (
@@ -735,8 +939,8 @@ export default function Page() {
                         <div style={{ fontWeight: 900, marginBottom: 8 }}>Post-Meeting Notes</div>
 
                         <textarea
-                          value={((currentSession as any).postMeetingNotes ?? "") as string}
-                          onChange={(e) => patchSession({ postMeetingNotes: e.target.value } as any)}
+                          value={(currentSession.postMeetingNotes ?? "") as string}
+                          onChange={(e) => patchSession({ postMeetingNotes: e.target.value } as any, { clearRedo: true })}
                           placeholder="Add anything you remembered after the meeting (clarifications, follow-ups, context, etc.)"
                           style={{
                             width: "100%",
@@ -758,7 +962,6 @@ export default function Page() {
                   <div style={{ border: "1px solid #eee", borderRadius: 14, padding: 14 }}>
                     <div style={{ fontWeight: 900, marginBottom: 8 }}>Output</div>
 
-                    {/* Summary */}
                     <div style={{ fontWeight: 900, fontSize: 13, marginBottom: 6 }}>Summary</div>
                     <pre
                       style={{
@@ -780,7 +983,6 @@ export default function Page() {
 
                     <div style={{ height: 12 }} />
 
-                    {/* Action Items */}
                     <div style={{ fontWeight: 900, fontSize: 13, marginBottom: 6 }}>Action Items (from notes)</div>
                     <pre
                       style={{
@@ -802,7 +1004,6 @@ export default function Page() {
 
                     <div style={{ height: 12 }} />
 
-                    {/* Draft Email from Notes */}
                     <div style={{ fontWeight: 900, fontSize: 13, marginBottom: 8 }}>Draft Email from Notes</div>
 
                     <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
@@ -886,6 +1087,79 @@ export default function Page() {
             </div>
           )}
         </section>
+      ) : null}
+
+      {/* Module 3 (partial): Past edit confirmation modal */}
+      {screen.name === "session" && currentSession?.mode === "past" && showPastEditConfirm ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.35)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 18,
+            zIndex: 50,
+          }}
+          onClick={() => setShowPastEditConfirm(false)}
+        >
+          <div
+            style={{
+              width: "100%",
+              maxWidth: 520,
+              background: "#fff",
+              borderRadius: 14,
+              border: "1px solid #eee",
+              padding: 16,
+              boxShadow: "0 10px 30px rgba(0,0,0,0.15)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ fontWeight: 900, fontSize: 16 }}>Edit Past Raw Notes?</div>
+
+            <div style={{ marginTop: 10, color: "#444", fontSize: 13, lineHeight: 1.45 }}>
+              Past meetings are intended to be an immutable record of what happened.
+              <br />
+              <br />
+              If you continue, you will be changing the historical raw notes. RecapKit will regenerate outputs from the
+              updated notes.
+            </div>
+
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 14, flexWrap: "wrap" }}>
+              <button
+                onClick={() => setShowPastEditConfirm(false)}
+                style={{
+                  padding: "10px 14px",
+                  borderRadius: 12,
+                  border: "1px solid #ddd",
+                  background: "#fff",
+                  cursor: "pointer",
+                  fontWeight: 800,
+                }}
+              >
+                Cancel
+              </button>
+
+              <button
+                onClick={confirmEnablePastEdit}
+                style={{
+                  padding: "10px 14px",
+                  borderRadius: 12,
+                  border: "1px solid #111",
+                  background: "#111",
+                  color: "#fff",
+                  cursor: "pointer",
+                  fontWeight: 900,
+                }}
+              >
+                Yes, Edit Raw Notes
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
     </main>
   );

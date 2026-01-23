@@ -6,12 +6,14 @@ export type Outputs = {
   email: string;
 };
 
+export type CheckpointReason = "clear" | "generate" | "end" | "manual";
+
 export type SessionCheckpoint = {
-  id: string;
-  createdAt: number;
   rawNotes: string;
   objective: string;
   outputs: Outputs;
+  timestamp: number;
+  reason: CheckpointReason;
 };
 
 export type Session = {
@@ -25,9 +27,10 @@ export type Session = {
   // Notes added after the meeting (used in Past mode)
   postMeetingNotes?: string;
 
+  // Derived artifacts only
   outputs: Outputs;
 
-  // Local session history checkpoints (Pause meeting / Clear / etc.)
+  // Local session history checkpoints (Clear / Generate / End / etc.)
   checkpoints?: SessionCheckpoint[];
 
   // For Undo/Redo support (Redo stack is separate from checkpoints)
@@ -53,13 +56,80 @@ function generateId() {
   return Math.random().toString(36).slice(2, 10);
 }
 
+function defaultOutputs(): Outputs {
+  return { actionItems: "", summary: "", email: "" };
+}
+
+function normalizeOutputs(o: any): Outputs {
+  return {
+    actionItems: o?.actionItems ?? "",
+    summary: o?.summary ?? "",
+    email: o?.email ?? "",
+  };
+}
+
+/**
+ * Back-compat: normalize legacy checkpoints (including legacy "pause") into the new shape.
+ * - If old data contains reason:"pause", we remap it to "manual" so the app never breaks.
+ */
+function normalizeCheckpoint(cp: any): SessionCheckpoint {
+  const reasonRaw = String(cp?.reason ?? "manual");
+
+  const reason: CheckpointReason =
+  reasonRaw === "clear" ||
+  reasonRaw === "generate" ||
+  reasonRaw === "end" ||
+  reasonRaw === "manual"
+    ? (reasonRaw as CheckpointReason)
+    : "manual"; // includes legacy "pause", unknown strings, etc.
+
+  return {
+    rawNotes: cp?.rawNotes ?? "",
+    objective: cp?.objective ?? "",
+    outputs: normalizeOutputs(cp?.outputs ?? defaultOutputs()),
+    timestamp: cp?.timestamp ?? cp?.createdAt ?? Date.now(),
+    reason,
+  };
+}
+
+/**
+ * Back-compat: normalize saved sessions from localStorage into the current shape.
+ * This prevents crashes when you change types over time.
+ */
+function normalizeSession(s: any): Session {
+  const now = Date.now();
+
+  const checkpointsRaw = Array.isArray(s?.checkpoints) ? s.checkpoints : [];
+  const redoRaw = Array.isArray(s?.redoStack) ? s.redoStack : [];
+
+  return {
+    id: s?.id ?? generateId(),
+    title: s?.title ?? "Untitled Meeting",
+    folderId: s?.folderId ?? null,
+    mode: (s?.mode ?? "current") as SessionMode,
+    objective: s?.objective ?? "",
+    rawNotes: s?.rawNotes ?? "",
+    postMeetingNotes: s?.postMeetingNotes ?? "",
+
+    outputs: normalizeOutputs(s?.outputs ?? defaultOutputs()),
+
+    checkpoints: checkpointsRaw.map(normalizeCheckpoint),
+    redoStack: redoRaw.map(normalizeCheckpoint),
+
+    createdAt: s?.createdAt ?? now,
+    updatedAt: s?.updatedAt ?? now,
+  };
+}
+
 /* -------------------- sessions -------------------- */
 
 export function loadSessions(): Session[] {
   if (typeof window === "undefined") return [];
   try {
     const raw = localStorage.getItem(SESSIONS_KEY);
-    return raw ? (JSON.parse(raw) as Session[]) : [];
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map(normalizeSession);
   } catch {
     return [];
   }
@@ -84,7 +154,7 @@ export function createSession(): Session {
     objective: "",
     rawNotes: "",
     postMeetingNotes: "",
-    outputs: { actionItems: "", summary: "", email: "" },
+    outputs: defaultOutputs(),
     checkpoints: [],
     redoStack: [],
     createdAt: now,
@@ -93,9 +163,7 @@ export function createSession(): Session {
 }
 
 export function updateSession(sessions: Session[], updated: Session): Session[] {
-  return sessions.map((s) =>
-    s.id === updated.id ? { ...updated, updatedAt: Date.now() } : s
-  );
+  return sessions.map((s) => (s.id === updated.id ? { ...updated, updatedAt: Date.now() } : s));
 }
 
 export function deleteSession(sessions: Session[], sessionId: string): Session[] {
@@ -107,9 +175,7 @@ export function moveSessionToFolder(
   sessionId: string,
   folderId: string | null
 ): Session[] {
-  return sessions.map((s) =>
-    s.id === sessionId ? { ...s, folderId, updatedAt: Date.now() } : s
-  );
+  return sessions.map((s) => (s.id === sessionId ? { ...s, folderId, updatedAt: Date.now() } : s));
 }
 
 /* -------------------- folders -------------------- */
@@ -118,7 +184,9 @@ export function loadFolders(): Folder[] {
   if (typeof window === "undefined") return [];
   try {
     const raw = localStorage.getItem(FOLDERS_KEY);
-    return raw ? (JSON.parse(raw) as Folder[]) : [];
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed as Folder[];
   } catch {
     return [];
   }
