@@ -1,4 +1,4 @@
-export type SessionMode = "future" | "current" | "past";
+export type SessionMode = "followUp" | "current" | "past";
 
 export type Outputs = {
   actionItems: string;
@@ -16,6 +16,46 @@ export type SessionCheckpoint = {
   reason: CheckpointReason;
 };
 
+export type FollowUpType =
+  | "Email"
+  | "Phone Call"
+  | "In-Person Meeting"
+  | "Video Call"
+  | "Text Message"
+  | "Other";
+
+export type MeetingResult =
+  | "Completed"
+  | "No Show"
+  | "Rescheduled"
+  | "Cancelled"
+  | "Pending";
+
+export type HighlightTag =
+  | "None"
+  | "Email"
+  | "Call"
+  | "Meeting"
+  | "Urgent"
+  | "Other";
+
+export type FollowUpHighlight = {
+  id: string; // stable id for the highlight row
+  text: string; // what was highlighted (usually an action item line)
+  tag: HighlightTag; // category tag (drives follow-up focus)
+};
+
+export type FollowUpData = {
+  followUpType: FollowUpType;
+  focusPrompt: string;
+  emailPrompt: string;
+
+  meetingResult: MeetingResult;
+  meetingOutcome: string;
+
+  highlights: FollowUpHighlight[];
+};
+
 export type Session = {
   id: string;
   title: string;
@@ -29,6 +69,9 @@ export type Session = {
 
   // Derived artifacts only
   outputs: Outputs;
+
+  // Follow-up planner (used in Follow-Up mode)
+  followUp?: FollowUpData;
 
   // Local session history checkpoints (Clear / Generate / End / etc.)
   checkpoints?: SessionCheckpoint[];
@@ -68,6 +111,34 @@ function normalizeOutputs(o: any): Outputs {
   };
 }
 
+function defaultFollowUpData(): FollowUpData {
+  return {
+    followUpType: "Email",
+    focusPrompt: "",
+    emailPrompt: "",
+    meetingResult: "Pending",
+    meetingOutcome: "",
+    highlights: [],
+  };
+}
+
+function normalizeFollowUpData(f: any): FollowUpData {
+  const highlightsRaw = Array.isArray(f?.highlights) ? f.highlights : [];
+
+  return {
+    followUpType: (f?.followUpType ?? "Email") as FollowUpType,
+    focusPrompt: f?.focusPrompt ?? "",
+    emailPrompt: f?.emailPrompt ?? "",
+    meetingResult: (f?.meetingResult ?? "Pending") as MeetingResult,
+    meetingOutcome: f?.meetingOutcome ?? "",
+    highlights: highlightsRaw.map((h: any) => ({
+      id: h?.id ?? generateId(),
+      text: h?.text ?? "",
+      tag: (h?.tag ?? "None") as HighlightTag,
+    })),
+  };
+}
+
 /**
  * Back-compat: normalize legacy checkpoints (including legacy "pause") into the new shape.
  * - If old data contains reason:"pause", we remap it to "manual" so the app never breaks.
@@ -76,12 +147,12 @@ function normalizeCheckpoint(cp: any): SessionCheckpoint {
   const reasonRaw = String(cp?.reason ?? "manual");
 
   const reason: CheckpointReason =
-  reasonRaw === "clear" ||
-  reasonRaw === "generate" ||
-  reasonRaw === "end" ||
-  reasonRaw === "manual"
-    ? (reasonRaw as CheckpointReason)
-    : "manual"; // includes legacy "pause", unknown strings, etc.
+    reasonRaw === "clear" ||
+    reasonRaw === "generate" ||
+    reasonRaw === "end" ||
+    reasonRaw === "manual"
+      ? (reasonRaw as CheckpointReason)
+      : "manual"; // includes legacy "pause", unknown strings, etc.
 
   return {
     rawNotes: cp?.rawNotes ?? "",
@@ -102,16 +173,27 @@ function normalizeSession(s: any): Session {
   const checkpointsRaw = Array.isArray(s?.checkpoints) ? s.checkpoints : [];
   const redoRaw = Array.isArray(s?.redoStack) ? s.redoStack : [];
 
+  // Back-compat: legacy "future" becomes "followUp"
+  const modeRaw = String(s?.mode ?? "current");
+  const mode: SessionMode =
+    modeRaw === "past" || modeRaw === "current" || modeRaw === "followUp"
+      ? (modeRaw as SessionMode)
+      : modeRaw === "future"
+        ? "followUp"
+        : "current";
+
   return {
     id: s?.id ?? generateId(),
     title: s?.title ?? "Untitled Meeting",
     folderId: s?.folderId ?? null,
-    mode: (s?.mode ?? "current") as SessionMode,
+    mode,
     objective: s?.objective ?? "",
     rawNotes: s?.rawNotes ?? "",
     postMeetingNotes: s?.postMeetingNotes ?? "",
 
     outputs: normalizeOutputs(s?.outputs ?? defaultOutputs()),
+
+    followUp: s?.followUp ? normalizeFollowUpData(s.followUp) : undefined,
 
     checkpoints: checkpointsRaw.map(normalizeCheckpoint),
     redoStack: redoRaw.map(normalizeCheckpoint),
@@ -155,6 +237,7 @@ export function createSession(): Session {
     rawNotes: "",
     postMeetingNotes: "",
     outputs: defaultOutputs(),
+    followUp: undefined,
     checkpoints: [],
     redoStack: [],
     createdAt: now,

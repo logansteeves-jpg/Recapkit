@@ -24,6 +24,22 @@ export type EmailTone = "professional" | "warm" | "friendlyProfessional" | "casu
 export type MakeEmailDraftOptions = {
   type?: EmailType;
   tone?: EmailTone;
+
+  /**
+   * Optional: override the Subject line (Follow-Up Planner can set this).
+   */
+  subjectOverride?: string;
+
+  /**
+   * Optional: extra context lines to include above the bullet list (Follow-Up Planner).
+   * Example lines: ["Follow-Up Type: Phone Call", "Meeting Result: Rescheduled", "Focus: ..."]
+   */
+  contextLines?: string[];
+
+  /**
+   * Optional: the bullet limit (defaults to 6 to preserve existing behavior).
+   */
+  maxBullets?: number;
 };
 
 function normalizeLines(raw: string): string[] {
@@ -71,15 +87,7 @@ export function parseActionItems(bullets: string[]): ActionItem[] {
     if (iso) return iso[0];
 
     // simple relative tokens
-    const dueTokens = [
-      "today",
-      "tomorrow",
-      "this week",
-      "next week",
-      "end of day",
-      "eod",
-      "eow",
-    ];
+    const dueTokens = ["today", "tomorrow", "this week", "next week", "end of day", "eod", "eow"];
     for (const t of dueTokens) {
       if (lower.includes(t)) return t;
     }
@@ -266,48 +274,56 @@ export function makeSummary(bullets: string[]): string {
 export function makeEmailDraft(bullets: string[], opts?: MakeEmailDraftOptions): string {
   const type: EmailType = opts?.type ?? "followUp";
   const tone: EmailTone = opts?.tone ?? "professional";
+  const maxBullets = typeof opts?.maxBullets === "number" ? opts!.maxBullets! : 6;
 
-  const bodyLines = bullets.slice(0, 6).map((b) => `- ${b}`);
+  const bodyLines = bullets.slice(0, maxBullets).map((b) => `- ${b}`);
 
   const subjectByType: Record<EmailType, string> = {
-    followUp: "Follow-up from our meeting",
-    question: "Quick question from our meeting",
-    actionComplete: "Update: action item completed",
-    actionClarification: "Clarification needed on an action item",
-    concern: "Concern / follow-up from our meeting",
+    followUp: "Follow-Up From Our Meeting",
+    question: "Quick Question From Our Meeting",
+    actionComplete: "Update: Action Item Completed",
+    actionClarification: "Clarification Needed On An Action Item",
+    concern: "Concern And Follow-Up From Our Meeting",
   };
 
   const greetingByTone: Record<EmailTone, string> = {
     professional: "Hi,",
-    warm: "Hi there,",
-    friendlyProfessional: "Hi team,",
+    warm: "Hi There,",
+    friendlyProfessional: "Hi Team,",
     casual: "Hey,",
   };
 
   const closingByTone: Record<EmailTone, string> = {
     professional: "Thanks,",
-    warm: "Thanks so much,",
+    warm: "Thanks So Much,",
     friendlyProfessional: "Thanks!",
     casual: "Thanks,",
   };
 
   const introByType: Record<EmailType, string> = {
-    followUp: "Here are the key points from our discussion:",
-    question: "I had a quick question coming out of our discussion:",
-    actionComplete: "Quick update - we completed the following:",
-    actionClarification: "Could you clarify the following item from our discussion?",
-    concern: "I wanted to flag a concern and confirm next steps:",
+    followUp: "Here Are The Key Points From Our Discussion:",
+    question: "I Had A Quick Question Coming Out Of Our Discussion:",
+    actionComplete: "Quick Update - We Completed The Following:",
+    actionClarification: "Could You Clarify The Following Item From Our Discussion?",
+    concern: "I Wanted To Flag A Concern And Confirm Next Steps:",
   };
 
-  const subject = subjectByType[type];
+  const subject = (opts?.subjectOverride ?? subjectByType[type]).trim();
+  const contextLines = Array.isArray(opts?.contextLines) ? opts!.contextLines!.filter(Boolean) : [];
+
+  const contextBlock =
+    contextLines.length > 0
+      ? `Context\n${contextLines.map((l) => `- ${l}`).join("\n")}\n\n`
+      : "";
 
   return (
     `Email Draft\n` +
     `Subject: ${subject}\n\n` +
     `${greetingByTone[tone]}\n\n` +
+    contextBlock +
     `${introByType[type]}\n` +
-    `${bodyLines.join("\n") || "- (no notes provided)"}\n\n` +
-    `Let me know if you have questions.\n\n` +
+    `${bodyLines.join("\n") || "- (No Notes Provided)"}\n\n` +
+    `Let Me Know If You Have Questions.\n\n` +
     `${closingByTone[tone]}`
   );
 }
