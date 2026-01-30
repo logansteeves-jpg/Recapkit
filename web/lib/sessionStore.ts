@@ -1,3 +1,5 @@
+// web/lib/sessionStore.ts
+
 export type SessionMode = "followUp" | "current" | "past";
 
 export type Outputs = {
@@ -46,14 +48,30 @@ export type FollowUpHighlight = {
 };
 
 export type FollowUpData = {
+  id: string; // NEW: follow-ups are distinct objects now
+  title: string; // NEW: a label for the follow-up (ex: "Follow-Up: Pricing + Timeline")
+  createdAt: number;
+  updatedAt: number;
+
   followUpType: FollowUpType;
   focusPrompt: string;
   emailPrompt: string;
 
+  highlights: FollowUpHighlight[];
+};
+
+/**
+ * Past meeting metadata lives on the past meeting session (NOT inside follow-up).
+ */
+export type PastMeta = {
   meetingResult: MeetingResult;
   meetingOutcome: string;
 
-  highlights: FollowUpHighlight[];
+  /**
+   * Optional: future expansion (ex: reschedule date, next meeting date, etc.)
+   * Keep strings for now so you can pipe into calendar integrations later.
+   */
+  nextMeetingDate?: string;
 };
 
 export type Session = {
@@ -70,8 +88,15 @@ export type Session = {
   // Derived artifacts only
   outputs: Outputs;
 
-  // Follow-up planner (used in Follow-Up mode)
-  followUp?: FollowUpData;
+  /**
+   * NEW: Past meeting metadata (result + outcome) stored on the past meeting session.
+   */
+  pastMeta?: PastMeta;
+
+  /**
+   * NEW: multiple follow-ups per past meeting
+   */
+  followUps?: FollowUpData[];
 
   // Local session history checkpoints (Clear / Generate / End / etc.)
   checkpoints?: SessionCheckpoint[];
@@ -111,31 +136,56 @@ function normalizeOutputs(o: any): Outputs {
   };
 }
 
-function defaultFollowUpData(): FollowUpData {
+function defaultPastMeta(): PastMeta {
   return {
+    meetingResult: "Pending",
+    meetingOutcome: "",
+    nextMeetingDate: "",
+  };
+}
+
+function normalizePastMeta(p: any): PastMeta {
+  return {
+    meetingResult: (p?.meetingResult ?? "Pending") as MeetingResult,
+    meetingOutcome: p?.meetingOutcome ?? "",
+    nextMeetingDate: p?.nextMeetingDate ?? "",
+  };
+}
+
+function normalizeHighlights(raw: any): FollowUpHighlight[] {
+  const highlightsRaw = Array.isArray(raw) ? raw : [];
+  return highlightsRaw.map((h: any) => ({
+    id: h?.id ?? generateId(),
+    text: h?.text ?? "",
+    tag: (h?.tag ?? "None") as HighlightTag,
+  }));
+}
+
+function defaultFollowUpData(): FollowUpData {
+  const now = Date.now();
+  return {
+    id: generateId(),
+    title: "Untitled Follow-Up",
+    createdAt: now,
+    updatedAt: now,
     followUpType: "Email",
     focusPrompt: "",
     emailPrompt: "",
-    meetingResult: "Pending",
-    meetingOutcome: "",
     highlights: [],
   };
 }
 
 function normalizeFollowUpData(f: any): FollowUpData {
-  const highlightsRaw = Array.isArray(f?.highlights) ? f.highlights : [];
-
+  const now = Date.now();
   return {
+    id: f?.id ?? generateId(),
+    title: f?.title ?? "Untitled Follow-Up",
+    createdAt: f?.createdAt ?? now,
+    updatedAt: f?.updatedAt ?? now,
     followUpType: (f?.followUpType ?? "Email") as FollowUpType,
     focusPrompt: f?.focusPrompt ?? "",
     emailPrompt: f?.emailPrompt ?? "",
-    meetingResult: (f?.meetingResult ?? "Pending") as MeetingResult,
-    meetingOutcome: f?.meetingOutcome ?? "",
-    highlights: highlightsRaw.map((h: any) => ({
-      id: h?.id ?? generateId(),
-      text: h?.text ?? "",
-      tag: (h?.tag ?? "None") as HighlightTag,
-    })),
+    highlights: normalizeHighlights(f?.highlights),
   };
 }
 
@@ -182,6 +232,28 @@ function normalizeSession(s: any): Session {
         ? "followUp"
         : "current";
 
+  // NEW: followUps array (back-compat from legacy followUp object)
+  const followUpsRaw = Array.isArray(s?.followUps) ? s.followUps : [];
+  const legacySingleFollowUp = s?.followUp ? s.followUp : null;
+
+  const followUpsNormalized: FollowUpData[] = [
+    ...followUpsRaw.map(normalizeFollowUpData),
+    ...(legacySingleFollowUp ? [normalizeFollowUpData(legacySingleFollowUp)] : []),
+  ];
+
+  // NEW: pastMeta (back-compat: lift meetingResult/outcome from legacy followUp if present)
+  const hasPastMeta = Boolean(s?.pastMeta);
+  const legacyMeetingResult = legacySingleFollowUp?.meetingResult;
+  const legacyMeetingOutcome = legacySingleFollowUp?.meetingOutcome;
+
+  const pastMetaFromLegacy =
+    !hasPastMeta && (legacyMeetingResult || legacyMeetingOutcome)
+      ? normalizePastMeta({
+          meetingResult: legacyMeetingResult ?? "Pending",
+          meetingOutcome: legacyMeetingOutcome ?? "",
+        })
+      : undefined;
+
   return {
     id: s?.id ?? generateId(),
     title: s?.title ?? "Untitled Meeting",
@@ -190,10 +262,15 @@ function normalizeSession(s: any): Session {
     objective: s?.objective ?? "",
     rawNotes: s?.rawNotes ?? "",
     postMeetingNotes: s?.postMeetingNotes ?? "",
-
     outputs: normalizeOutputs(s?.outputs ?? defaultOutputs()),
 
-    followUp: s?.followUp ? normalizeFollowUpData(s.followUp) : undefined,
+    pastMeta: s?.pastMeta
+      ? normalizePastMeta(s.pastMeta)
+      : pastMetaFromLegacy
+        ? pastMetaFromLegacy
+        : undefined,
+
+    followUps: followUpsNormalized.length ? followUpsNormalized : undefined,
 
     checkpoints: checkpointsRaw.map(normalizeCheckpoint),
     redoStack: redoRaw.map(normalizeCheckpoint),
@@ -237,7 +314,10 @@ export function createSession(): Session {
     rawNotes: "",
     postMeetingNotes: "",
     outputs: defaultOutputs(),
-    followUp: undefined,
+
+    pastMeta: undefined,
+    followUps: undefined,
+
     checkpoints: [],
     redoStack: [],
     createdAt: now,
@@ -259,6 +339,54 @@ export function moveSessionToFolder(
   folderId: string | null
 ): Session[] {
   return sessions.map((s) => (s.id === sessionId ? { ...s, folderId, updatedAt: Date.now() } : s));
+}
+
+/**
+ * Helper: Create a new Follow-Up object and attach it to a session.
+ * (You can call this from page.tsx when the user clicks "New Follow-Up".)
+ */
+export function addFollowUpToSession(session: Session, patch?: Partial<FollowUpData>): Session {
+  const now = Date.now();
+  const base = defaultFollowUpData();
+
+  const next: FollowUpData = {
+    ...base,
+    ...patch,
+    // ensure timestamps exist and update updatedAt
+    createdAt: patch?.createdAt ?? base.createdAt,
+    updatedAt: now,
+    highlights: patch?.highlights ? normalizeHighlights(patch.highlights) : base.highlights,
+  };
+
+  const list = Array.isArray(session.followUps) ? session.followUps : [];
+  return {
+    ...session,
+    followUps: [...list, next],
+    updatedAt: now,
+  };
+}
+
+/**
+ * Helper: Update an existing follow-up by id.
+ */
+export function updateFollowUpInSession(session: Session, followUpId: string, patch: Partial<FollowUpData>): Session {
+  const now = Date.now();
+  const list = Array.isArray(session.followUps) ? session.followUps : [];
+  const nextList = list.map((fu) => {
+    if (fu.id !== followUpId) return fu;
+    return {
+      ...fu,
+      ...patch,
+      updatedAt: now,
+      highlights: patch?.highlights ? normalizeHighlights(patch.highlights) : fu.highlights,
+    };
+  });
+
+  return {
+    ...session,
+    followUps: nextList,
+    updatedAt: now,
+  };
 }
 
 /* -------------------- folders -------------------- */

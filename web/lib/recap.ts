@@ -327,3 +327,70 @@ export function makeEmailDraft(bullets: string[], opts?: MakeEmailDraftOptions):
     `${closingByTone[tone]}`
   );
 }
+
+/* -------------------- Follow-Up Helper -------------------- */
+
+export type FollowUpEmailHighlight = {
+  text: string;
+  tag?: string;
+};
+
+export type MakeFollowUpEmailDraftArgs = {
+  highlights: FollowUpEmailHighlight[];
+  followUpType?: string;
+  focusPrompt?: string;
+  emailPrompt?: string;
+  meetingResult?: string;
+  meetingOutcome?: string;
+  emailType?: EmailType;
+  emailTone?: EmailTone;
+};
+
+export function makeFollowUpEmailDraftFromHighlights(args: MakeFollowUpEmailDraftArgs): string {
+  const type: EmailType = args.emailType ?? "followUp";
+  const tone: EmailTone = args.emailTone ?? "professional";
+
+  const contextLines: string[] = [];
+
+  if (args.followUpType && String(args.followUpType).trim()) {
+    contextLines.push(`Follow-Up Type: ${String(args.followUpType).trim()}`);
+  }
+
+  if (args.meetingResult && String(args.meetingResult).trim() && String(args.meetingResult) !== "Pending") {
+    contextLines.push(`Meeting Result: ${String(args.meetingResult).trim()}`);
+  }
+
+  if (args.focusPrompt && args.focusPrompt.trim()) {
+    contextLines.push(`Focus: ${args.focusPrompt.trim()}`);
+  }
+
+  if (args.meetingOutcome && args.meetingOutcome.trim()) {
+    contextLines.push(`Outcome: ${args.meetingOutcome.trim()}`);
+  }
+
+  if (args.emailPrompt && args.emailPrompt.trim()) {
+    contextLines.push(`Email Instructions: ${args.emailPrompt.trim()}`);
+  }
+
+  const bullets: string[] =
+    Array.isArray(args.highlights) && args.highlights.length
+      ? args.highlights
+          .map((h) => {
+            const tag = (h.tag ?? "").trim();
+            const prefix = tag && tag !== "None" ? `[${tag}] ` : "";
+            return `${prefix}${(h.text ?? "").trim()}`.trim();
+          })
+          .filter(Boolean)
+      : ["(No Follow-Up Items Selected Yet)"];
+
+  const followUpType = (args.followUpType ?? "").trim();
+  const subjectOverride = followUpType ? `Follow-Up - ${followUpType}` : undefined;
+
+  return makeEmailDraft(bullets, {
+    type,
+    tone,
+    subjectOverride,
+    contextLines,
+    maxBullets: 20,
+  });
+}

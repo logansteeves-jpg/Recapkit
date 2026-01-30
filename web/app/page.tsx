@@ -1,14 +1,9 @@
+// PART 1/4 - paste this first (top of file)
+
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import {
-  parseBullets,
-  parseActionItems,
-  detectActionIssues,
-  formatActionItems,
-  makeSummary,
-  makeEmailDraft,
-} from "../lib/recap";
+import { makeFollowUpEmailDraftFromHighlights } from "../lib/recap";
 import {
   createFolder,
   createSession,
@@ -23,14 +18,22 @@ import {
   type SortMode,
   type SessionCheckpoint,
   type CheckpointReason,
-  type FollowUpData,
-  type FollowUpHighlight,
-  type HighlightTag,
-  type FollowUpType,
-  type MeetingResult,
 } from "../lib/sessionStore";
 
 type Screen = { name: "home" } | { name: "session"; sessionId: string };
+
+type EmailType =
+  | "followUp"
+  | "question"
+  | "actionComplete"
+  | "actionClarification"
+  | "concern";
+
+type EmailTone = "professional" | "warm" | "friendlyProfessional" | "casual";
+
+type GenerateMode = "current" | "past";
+
+/* -------------------- small helpers -------------------- */
 
 function formatDate(ts: number) {
   try {
@@ -40,10 +43,11 @@ function formatDate(ts: number) {
   }
 }
 
-function modeLabel(mode: "followUp" | "current" | "past") {
+function modeLabel(mode: any) {
   if (mode === "past") return "Past Meeting";
   if (mode === "current") return "Meeting Still Open";
-  return "Follow-Up Session";
+  if (mode === "followUp") return "Follow-Up Planner";
+  return String(mode ?? "");
 }
 
 function checkpointCoreEqual(a: SessionCheckpoint, b: SessionCheckpoint) {
@@ -89,28 +93,101 @@ function InSessionBadge() {
   );
 }
 
+function splitActionItemsToRows(actionItemsText: string): string[] {
+  const lines = (actionItemsText || "").split("\n").map((l) => l.trim());
+  return lines
+    .filter((l) => /^\d+\.\s+/.test(l))
+    .map((l) => l.replace(/^\d+\.\s+/, "").trim())
+    .filter(Boolean);
+}
+
+function generateId() {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+/* -------------------- Follow-Up (duck-typed) -------------------- */
+
+type HighlightTag = "None" | "Email" | "Call" | "Meeting" | "Urgent" | "Other";
+type FollowUpType =
+  | "Email"
+  | "Phone Call"
+  | "In-Person Meeting"
+  | "Video Call"
+  | "Text Message"
+  | "Other";
+type MeetingResult = "Completed" | "No Show" | "Rescheduled" | "Cancelled" | "Pending";
+
+type FollowUpHighlight = {
+  id: string;
+  text: string;
+  tag: HighlightTag;
+};
+
+type FollowUpData = {
+  id: string;
+  title: string;
+  followUpType: FollowUpType;
+  focusPrompt: string;
+  emailPrompt: string;
+  highlights: FollowUpHighlight[];
+};
+
 function defaultFollowUp(): FollowUpData {
   return {
+    id: generateId(),
+    title: "Follow-Up",
     followUpType: "Email",
     focusPrompt: "",
     emailPrompt: "",
-    meetingResult: "Pending",
-    meetingOutcome: "",
     highlights: [],
   };
 }
 
-function splitActionItemsToRows(actionItemsText: string): string[] {
-  const lines = (actionItemsText || "").split("\n").map((l) => l.trim());
-  // Pull numbered items: "1. ...", "2. ..."
-  const rows = lines
-    .filter((l) => /^\d+\.\s+/.test(l))
-    .map((l) => l.replace(/^\d+\.\s+/, "").trim())
-    .filter(Boolean);
-
-  return rows;
+function followUpDisplayTitle(fu: FollowUpData) {
+  const base = (fu.title || "Follow-Up").trim();
+  return base.length ? base : "Follow-Up";
 }
 
+function buildFollowUpPrepTemplate(args: {
+  pastTitle: string;
+  followUpTitle: string;
+  focusPrompt: string;
+  highlights: FollowUpHighlight[];
+}) {
+  const { pastTitle, followUpTitle, focusPrompt, highlights } = args;
+
+  const lines: string[] = [];
+  lines.push(`Follow-Up Prep`);
+  lines.push("");
+  lines.push(`Source Meeting: ${pastTitle || "Past Meeting"}`);
+  lines.push(`Follow-Up: ${followUpTitle || "Follow-Up"}`);
+  if (focusPrompt.trim()) lines.push(`Focus: ${focusPrompt.trim()}`);
+  lines.push("");
+  lines.push(`Agenda / Talking Points`);
+  lines.push(`-`);
+  lines.push("");
+  lines.push(`Questions To Ask`);
+  lines.push(`-`);
+  lines.push("");
+  lines.push(`Updates Needed Before The Call`);
+  lines.push(`-`);
+  lines.push("");
+  lines.push(`Items We Are Following Up On`);
+  if (highlights.length) {
+    for (const h of highlights) {
+      const tag = (h.tag ?? "Other").trim();
+      const prefix = tag && tag !== "None" ? `[${tag}] ` : "";
+      lines.push(`- ${prefix}${h.text}`.trim());
+    }
+  } else {
+    lines.push(`- (No highlights selected yet)`);
+  }
+  lines.push("");
+  lines.push(`Proposed Next Steps`);
+  lines.push(`-`);
+
+  return lines.join("\n");
+}
 export default function Page() {
   const [screen, setScreen] = useState<Screen>({ name: "home" });
 
@@ -120,21 +197,18 @@ export default function Page() {
 
   const [newFolderName, setNewFolderName] = useState("");
 
-  const [emailType, setEmailType] = useState<
-    "followUp" | "question" | "actionComplete" | "actionClarification" | "concern"
-  >("followUp");
+  // email controls
+  const [emailType, setEmailType] = useState<EmailType>("followUp");
+  const [emailTone, setEmailTone] = useState<EmailTone>("professional");
 
-  const [emailTone, setEmailTone] = useState<"professional" | "warm" | "friendlyProfessional" | "casual">(
-    "professional"
-  );
-
-  // Module 3 (partial): Past raw notes edit warning UX
+  // Past raw notes edit warning UX
   const [showPastEditConfirm, setShowPastEditConfirm] = useState(false);
   const [isEditingPastRawNotes, setIsEditingPastRawNotes] = useState(false);
   const [pastEditDraft, setPastEditDraft] = useState("");
   const [pastEditOriginal, setPastEditOriginal] = useState("");
 
-  // Follow-Up UI helpers
+  // Follow-up UI state: which follow-up we are editing
+  const [activeFollowUpId, setActiveFollowUpId] = useState<string | null>(null);
   const [newHighlightText, setNewHighlightText] = useState("");
 
   useEffect(() => {
@@ -158,15 +232,18 @@ export default function Page() {
   const sessionsByFolder = useMemo(() => {
     const map: Record<string, Session[]> = {};
     for (const f of folders) map[f.id] = [];
+
     for (const s of sessions) {
       if (s.folderId) {
         if (!map[s.folderId]) map[s.folderId] = [];
         map[s.folderId].push(s);
       }
     }
+
     for (const key of Object.keys(map)) {
       map[key] = sortSessions(map[key], sortMode);
     }
+
     return map;
   }, [folders, sessions, sortMode]);
 
@@ -185,12 +262,14 @@ export default function Page() {
   function openSession(sessionId: string) {
     resetPastEditUi();
     setNewHighlightText("");
+    setActiveFollowUpId(null);
     setScreen({ name: "session", sessionId });
   }
 
   function goHome() {
     resetPastEditUi();
     setNewHighlightText("");
+    setActiveFollowUpId(null);
     setScreen({ name: "home" });
   }
 
@@ -216,11 +295,11 @@ export default function Page() {
   }
 
   function getCheckpoints(s: Session): SessionCheckpoint[] {
-    return Array.isArray(s.checkpoints) ? s.checkpoints : [];
+    return Array.isArray((s as any).checkpoints) ? ((s as any).checkpoints as SessionCheckpoint[]) : [];
   }
 
   function getRedoStack(s: Session): SessionCheckpoint[] {
-    return Array.isArray(s.redoStack) ? s.redoStack : [];
+    return Array.isArray((s as any).redoStack) ? ((s as any).redoStack as SessionCheckpoint[]) : [];
   }
 
   function makeCheckpoint(reason: CheckpointReason, s: Session): SessionCheckpoint {
@@ -237,7 +316,6 @@ export default function Page() {
 
   function pushCheckpoint(session: Session, checkpoint: SessionCheckpoint) {
     const existing = getCheckpoints(session);
-
     const last = existing[existing.length - 1];
     if (last && checkpointCoreEqual(last, checkpoint)) return existing;
 
@@ -281,26 +359,73 @@ export default function Page() {
     setSessions((prev) => updateSession(prev, updated as Session));
   }
 
-  function safeMakeEmailDraft(bullets: string[]) {
-    return (makeEmailDraft as any)(bullets, { type: emailType, tone: emailTone }) as string;
-  }
+  async function generateViaApi(params: {
+  rawNotes: string;
+  postMeetingNotes: string;
+  mode: GenerateMode;
+  emailType: EmailType;
+  emailTone: EmailTone;
+}): Promise<Session["outputs"] | null> {
+  try {
+    const res = await fetch("/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    });
 
-  function generateArtifactsFromRawNotes(rawNotes: string, postMeetingNotes?: string) {
-    const merged = postMeetingNotes?.trim()
-      ? `${rawNotes}\n\nPost-Meeting Notes:\n${postMeetingNotes.trim()}`
-      : rawNotes;
+    const data = await res.json();
 
-    const bullets: string[] = parseBullets(merged);
-    const items = parseActionItems(bullets);
-    const issues = detectActionIssues(items);
+    if (!data?.ok || !data?.outputs) {
+      console.error("Generate failed:", data);
+      return null;
+    }
 
     return {
-      summary: makeSummary(bullets),
-      actionItems: formatActionItems(items, issues),
-      email: safeMakeEmailDraft(bullets),
+      summary: String(data.outputs.summary ?? ""),
+      actionItems: String(data.outputs.actionItems ?? ""),
+      // /api/generate no longer returns email. keep stable shape for outputs.
+      email: String(data.outputs.email ?? ""),
     };
+  } catch (err) {
+    console.error("Generate error:", err);
+    return null;
   }
+}
 
+/**
+ * Follow-Up email generation endpoint (separate from /api/generate)
+ * If you haven't created this route yet, keep this but it will 404 until it exists.
+ */
+async function generateFollowUpEmailViaApi(params: {
+  highlights: { text: string; tag?: string }[];
+  followUpType: string;
+  focusPrompt: string;
+  emailPrompt: string;
+  meetingResult: string;
+  meetingOutcome: string;
+  emailType: EmailType;
+  emailTone: EmailTone;
+}): Promise<string | null> {
+  try {
+    const res = await fetch("/api/generate/follow-up", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    });
+
+    const data = await res.json();
+
+    if (!data?.ok) {
+      console.error("Follow-up generate failed:", data);
+      return null;
+    }
+
+    return String(data?.email ?? data?.outputs?.email ?? "");
+  } catch (err) {
+    console.error("Follow-up generate error:", err);
+    return null;
+  }
+}
   // Avoid hijacking native textarea undo
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -310,7 +435,6 @@ export default function Page() {
       const el = document.activeElement as HTMLElement | null;
       const tag = el?.tagName?.toLowerCase();
       const isTypingField = tag === "textarea" || tag === "input" || (el as any)?.isContentEditable;
-
       if (isTypingField) return;
 
       const isMac = navigator.platform.toLowerCase().includes("mac");
@@ -333,25 +457,50 @@ export default function Page() {
     return () => window.removeEventListener("keydown", onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screen, currentSession, sessions]);
+  // PART 3/4 - paste immediately after PART 2
 
-  function handleGenerateNow() {
+  async function handleGenerateNow() {
+  if (!currentSession) return;
+
+  // Follow-Up mode does not use the main Generate pipeline.
+  // Use "Generate Email Draft" in the Follow-Up Planner instead.
+  if (currentSession.mode === "followUp") return;
+
+  const rawNotesForGen =
+    currentSession.mode === "past" && isEditingPastRawNotes
+      ? pastEditDraft
+      : currentSession.rawNotes;
+
+  const outputs = await generateViaApi({
+    rawNotes: rawNotesForGen,
+    postMeetingNotes: String((currentSession as any).postMeetingNotes ?? ""),
+    emailType,
+    emailTone,
+    mode: (currentSession.mode === "current" ? "current" : "past") as GenerateMode,
+  });
+
+  if (!outputs) return;
+  doDestructive("generate", () => ({ outputs }));
+}
+
+  async function handleEndMeeting() {
     if (!currentSession) return;
 
-    doDestructive("generate", (base) => {
-      const postMeetingNotes = (base.postMeetingNotes ?? "") as string;
-      const outputs = generateArtifactsFromRawNotes(base.rawNotes, postMeetingNotes);
-      return { outputs };
+    const outputs = await generateViaApi({
+      rawNotes: currentSession.rawNotes,
+      postMeetingNotes: String((currentSession as any).postMeetingNotes ?? ""),
+      emailType,
+      emailTone,
+      mode: "past",
     });
-  }
 
-  function handleEndMeeting() {
-    if (!currentSession) return;
+    if (!outputs) return;
 
-    doDestructive("end", (base) => {
-      const postMeetingNotes = (base.postMeetingNotes ?? "") as string;
-      const outputs = generateArtifactsFromRawNotes(base.rawNotes, postMeetingNotes);
-      return { mode: "past", outputs };
-    });
+    doDestructive("end", () => ({
+      mode: "past",
+      outputs,
+      pastMeta: (currentSession as any).pastMeta ?? { meetingResult: "Pending", meetingOutcome: "" },
+    }));
 
     resetPastEditUi();
   }
@@ -364,7 +513,6 @@ export default function Page() {
 
     const previous = checkpoints[checkpoints.length - 1];
     const nowSnap = makeCheckpoint("manual", currentSession);
-
     const redoStack = getRedoStack(currentSession);
 
     const updated: any = {
@@ -389,7 +537,6 @@ export default function Page() {
 
     const next = redoStack[redoStack.length - 1];
     const nowSnap = makeCheckpoint("manual", currentSession);
-
     const checkpoints = getCheckpoints(currentSession);
 
     const updated: any = {
@@ -409,13 +556,11 @@ export default function Page() {
   function handleClear() {
     if (!currentSession) return;
 
-    doDestructive("clear", () => {
-      return {
-        rawNotes: "",
-        objective: "",
-        outputs: { actionItems: "", summary: "", email: "" },
-      };
-    });
+    doDestructive("clear", () => ({
+      rawNotes: "",
+      objective: "",
+      outputs: { actionItems: "", summary: "", email: "" },
+    }));
 
     resetPastEditUi();
   }
@@ -438,93 +583,221 @@ export default function Page() {
     resetPastEditUi();
   }
 
-  function savePastEdit() {
+  async function savePastEdit() {
     if (!currentSession) return;
     if (currentSession.mode !== "past") return;
 
-    doDestructive("manual", (base) => {
-      const postMeetingNotes = (base.postMeetingNotes ?? "") as string;
-      const outputs = generateArtifactsFromRawNotes(pastEditDraft, postMeetingNotes);
-      return { rawNotes: pastEditDraft, outputs };
+    const outputs = await generateViaApi({
+      rawNotes: pastEditDraft,
+      postMeetingNotes: String((currentSession as any).postMeetingNotes ?? ""),
+      emailType,
+      emailTone,
+      mode: "past",
     });
+
+    if (!outputs) return;
+
+    doDestructive("manual", () => ({
+      rawNotes: pastEditDraft,
+      outputs,
+    }));
 
     resetPastEditUi();
   }
 
-  function ensureFollowUpInitialized(s: Session): FollowUpData {
-    return s.followUp ? s.followUp : defaultFollowUp();
+  /* -------------------- pastMeta (meeting outcome lives here) -------------------- */
+
+  function getPastMeta(s: Session): { meetingResult: MeetingResult; meetingOutcome: string } {
+    const pm = (s as any).pastMeta;
+    return {
+      meetingResult: (pm?.meetingResult ?? "Pending") as MeetingResult,
+      meetingOutcome: String(pm?.meetingOutcome ?? ""),
+    };
   }
 
-  function enterFollowUpMode() {
+  function patchPastMeta(patch: Partial<{ meetingResult: MeetingResult; meetingOutcome: string }>) {
     if (!currentSession) return;
-    const fu = ensureFollowUpInitialized(currentSession);
-    patchSession({ mode: "followUp", followUp: fu } as any, { clearRedo: true });
+    const pm = getPastMeta(currentSession);
+    patchSession({ pastMeta: { ...pm, ...patch } } as any, { clearRedo: true });
+  }
+
+  /* -------------------- followUps list + active followUp -------------------- */
+
+  function getFollowUps(s: Session): FollowUpData[] {
+    const list = (s as any).followUps;
+    if (Array.isArray(list)) return list as FollowUpData[];
+
+    const single = (s as any).followUp;
+    if (single && typeof single === "object") {
+      const fu: FollowUpData = {
+        ...defaultFollowUp(),
+        ...(single as any),
+        id: (single as any).id ?? generateId(),
+        title: (single as any).title ?? "Follow-Up",
+        highlights: Array.isArray((single as any).highlights) ? (single as any).highlights : [],
+      };
+      return [fu];
+    }
+
+    return [];
+  }
+
+  function setFollowUps(next: FollowUpData[]) {
+    if (!currentSession) return;
+    patchSession({ followUps: next } as any, { clearRedo: true });
+  }
+
+  const followUps = useMemo(() => {
+    if (!currentSession) return [];
+    return getFollowUps(currentSession);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSession?.id, currentSession?.updatedAt, currentSession?.mode]);
+
+  const activeFollowUp = useMemo(() => {
+    if (!currentSession) return null;
+    if (currentSession.mode !== "followUp") return null;
+    if (!followUps.length) return null;
+
+    if (activeFollowUpId) {
+      const found = followUps.find((f) => f.id === activeFollowUpId);
+      if (found) return found;
+    }
+
+    return followUps[0];
+  }, [currentSession, followUps, activeFollowUpId]);
+
+  // Set a default active follow-up when entering followUp mode
+  useEffect(() => {
+    if (!currentSession) return;
+    if (currentSession.mode !== "followUp") return;
+    if (!followUps.length) return;
+
+    if (!activeFollowUpId || !followUps.some((f) => f.id === activeFollowUpId)) {
+      setActiveFollowUpId(followUps[0].id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSession?.id, currentSession?.mode, followUps.length]);
+
+  function createNewFollowUpAndOpen() {
+    if (!currentSession) return;
+    if (currentSession.mode !== "past" && currentSession.mode !== "followUp") return;
+
+    const list = getFollowUps(currentSession);
+    const fu = defaultFollowUp();
+
+    const n = list.length + 1;
+    fu.title = `Follow-Up ${n}`;
+
+    const next = [fu, ...list];
+    setFollowUps(next);
+
+    setActiveFollowUpId(fu.id);
+    patchSession({ mode: "followUp" } as any, { clearRedo: true });
+  }
+
+  function updateFollowUp(followUpId: string, patch: Partial<FollowUpData>) {
+    if (!currentSession) return;
+    const list = getFollowUps(currentSession);
+    const next = list.map((f) => (f.id === followUpId ? { ...f, ...patch } : f));
+    setFollowUps(next);
+  }
+
+  function removeFollowUp(followUpId: string) {
+    if (!currentSession) return;
+    const list = getFollowUps(currentSession);
+    const next = list.filter((f) => f.id !== followUpId);
+    setFollowUps(next);
+
+    if (activeFollowUpId === followUpId) {
+      setActiveFollowUpId(next.length ? next[0].id : null);
+    }
+  }
+
+  function enterFollowUpModeForId(followUpId: string) {
+    if (!currentSession) return;
+    if (currentSession.mode !== "past" && currentSession.mode !== "followUp") return;
+
+    setActiveFollowUpId(followUpId);
+    patchSession({ mode: "followUp" } as any, { clearRedo: true });
   }
 
   function returnToPastMode() {
     if (!currentSession) return;
-    patchSession({ mode: "past" }, { clearRedo: true });
+    patchSession({ mode: "past" } as any, { clearRedo: true });
   }
 
-  function updateFollowUp(patch: Partial<FollowUpData>) {
+  function addHighlightToFollowUp(fu: FollowUpData, text: string, tag: HighlightTag) {
     if (!currentSession) return;
-    const fu = ensureFollowUpInitialized(currentSession);
-    patchSession({ followUp: { ...fu, ...patch } } as any, { clearRedo: true });
-  }
 
-  function addHighlight(text: string, tag: HighlightTag) {
-    if (!currentSession) return;
-    const fu = ensureFollowUpInitialized(currentSession);
     const cleaned = text.trim();
     if (!cleaned) return;
 
-    const next: FollowUpHighlight[] = [
-      ...fu.highlights,
-      { id: Math.random().toString(36).slice(2, 10), text: cleaned, tag },
-    ];
-    updateFollowUp({ highlights: next });
+    const next: FollowUpHighlight[] = [...fu.highlights, { id: generateId(), text: cleaned, tag }];
+    updateFollowUp(fu.id, { highlights: next });
   }
 
-  function removeHighlight(id: string) {
-    if (!currentSession) return;
-    const fu = ensureFollowUpInitialized(currentSession);
-    updateFollowUp({ highlights: fu.highlights.filter((h) => h.id !== id) });
+  function removeHighlightFromFollowUp(fu: FollowUpData, id: string) {
+    updateFollowUp(fu.id, { highlights: fu.highlights.filter((h) => h.id !== id) });
   }
 
-  function updateHighlightTag(id: string, tag: HighlightTag) {
-    if (!currentSession) return;
-    const fu = ensureFollowUpInitialized(currentSession);
-    updateFollowUp({
+  function updateHighlightTag(fu: FollowUpData, id: string, tag: HighlightTag) {
+    updateFollowUp(fu.id, {
       highlights: fu.highlights.map((h) => (h.id === id ? { ...h, tag } : h)),
     });
   }
 
-  function generateFollowUpEmailFromHighlights() {
+  function generateEmailDraftForActiveFollowUp() {
     if (!currentSession) return;
-    const fu = ensureFollowUpInitialized(currentSession);
+    if (currentSession.mode !== "followUp") return;
+    if (!activeFollowUp) return;
 
-    const bullets: string[] = [];
+    const pm = getPastMeta(currentSession);
 
-    if (fu.focusPrompt.trim()) bullets.push(`Focus: ${fu.focusPrompt.trim()}`);
-    if (fu.meetingResult && fu.meetingResult !== "Pending") bullets.push(`Meeting Result: ${fu.meetingResult}`);
-    if (fu.meetingOutcome.trim()) bullets.push(`Outcome: ${fu.meetingOutcome.trim()}`);
+    const email = makeFollowUpEmailDraftFromHighlights({
+      highlights: activeFollowUp.highlights.map((h) => ({ text: h.text, tag: h.tag })),
+      followUpType: activeFollowUp.followUpType,
+      focusPrompt: activeFollowUp.focusPrompt,
+      emailPrompt: activeFollowUp.emailPrompt,
+      meetingResult: pm.meetingResult,
+      meetingOutcome: pm.meetingOutcome,
+      emailType,
+      emailTone,
+    });
 
-    if (fu.highlights.length) {
-      bullets.push("Follow-Up Items:");
-      for (const h of fu.highlights) {
-        bullets.push(`${h.tag === "None" ? "" : `[${h.tag}] `}${h.text}`);
-      }
-    } else {
-      bullets.push("No Follow-Up Items Selected Yet.");
-    }
-
-    if (fu.emailPrompt.trim()) bullets.push(`Email Notes: ${fu.emailPrompt.trim()}`);
-
-    const email = safeMakeEmailDraft(bullets);
-
-    // Save just the email output (keep summary/action items untouched)
     patchSession({ outputs: { ...currentSession.outputs, email } }, { clearRedo: true });
   }
+
+  function scheduleMeetingForActiveFollowUp() {
+    if (!currentSession) return;
+    if (currentSession.mode !== "followUp") return;
+    if (!activeFollowUp) return;
+
+    const pastTitle = currentSession.title ?? "Past Meeting";
+    const prep = buildFollowUpPrepTemplate({
+      pastTitle,
+      followUpTitle: followUpDisplayTitle(activeFollowUp),
+      focusPrompt: activeFollowUp.focusPrompt,
+      highlights: activeFollowUp.highlights,
+    });
+
+    const s = createSession();
+    const newCurrent: Session = {
+      ...s,
+      folderId: currentSession.folderId ?? null,
+      mode: "current" as any,
+      title: `Follow-Up Meeting - ${followUpDisplayTitle(activeFollowUp)}`,
+      objective: `Follow-Up From: ${pastTitle}`,
+      rawNotes: prep,
+      outputs: { actionItems: "", summary: "", email: "" },
+      updatedAt: Date.now(),
+      createdAt: Date.now(),
+    };
+
+    setSessions((prev) => [newCurrent, ...prev]);
+    openSession(newCurrent.id);
+  }
+
+  /* -------------------- derived UI state -------------------- */
 
   const checkpointsCount = currentSession ? getCheckpoints(currentSession).length : 0;
   const redoCount = currentSession ? getRedoStack(currentSession).length : 0;
@@ -536,7 +809,7 @@ export default function Page() {
     return splitActionItemsToRows(currentSession.outputs.actionItems || "");
   }, [currentSession]);
 
-  const followUp = currentSession ? ensureFollowUpInitialized(currentSession) : null;
+  /* -------------------- render -------------------- */
 
   return (
     <main style={{ maxWidth: 1100, margin: "0 auto", padding: 18 }}>
@@ -731,7 +1004,7 @@ export default function Page() {
           </div>
         </section>
       ) : null}
-
+      
       {/* SESSION */}
       {screen.name === "session" ? (
         <section>
@@ -759,26 +1032,39 @@ export default function Page() {
                   {(currentSession.folderId ? sessionsByFolder[currentSession.folderId] ?? [] : standaloneSessions).map(
                     (s) => {
                       const active = s.id === currentSession.id;
+                      const fuCount = Array.isArray((s as any).followUps) ? (s as any).followUps.length : 0;
+
                       return (
-                        <button
+                        <div
                           key={s.id}
-                          onClick={() => openSession(s.id)}
-                          style={{
-                            textAlign: "left",
-                            padding: "10px 12px",
-                            borderRadius: 12,
-                            border: "1px solid #eee",
-                            background: active ? "#111" : "#fff",
-                            color: active ? "#fff" : "#111",
-                            cursor: "pointer",
-                          }}
+                          style={{ border: active ? "1px solid #111" : "1px solid #eee", borderRadius: 12 }}
                         >
-                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                            <div style={{ fontWeight: 800 }}>{s.title}</div>
-                            {!active && s.mode === "current" ? <InSessionBadge /> : null}
-                          </div>
-                          <div style={{ opacity: 0.8, fontSize: 12 }}>{formatDate(s.updatedAt)}</div>
-                        </button>
+                          <button
+                            onClick={() => openSession(s.id)}
+                            style={{
+                              width: "100%",
+                              textAlign: "left",
+                              padding: "10px 12px",
+                              borderRadius: 12,
+                              border: "none",
+                              background: active ? "#111" : "#fff",
+                              color: active ? "#fff" : "#111",
+                              cursor: "pointer",
+                            }}
+                          >
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                              <div style={{ fontWeight: 800 }}>{s.title}</div>
+                              {!active && s.mode === "current" ? <InSessionBadge /> : null}
+                            </div>
+                            <div style={{ opacity: 0.8, fontSize: 12 }}>{formatDate(s.updatedAt)}</div>
+
+                            {s.mode === "past" && fuCount > 0 ? (
+                              <div style={{ marginTop: 6, fontSize: 12, opacity: 0.85 }}>
+                                Follow-Ups: <b>{fuCount}</b>
+                              </div>
+                            ) : null}
+                          </button>
+                        </div>
                       );
                     }
                   )}
@@ -803,6 +1089,56 @@ export default function Page() {
                     + New Session
                   </button>
                 </div>
+
+                {/* Past session follow-ups quick access */}
+                {currentSession.mode === "past" ? (
+                  <div style={{ marginTop: 14, borderTop: "1px solid #eee", paddingTop: 12 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                      <div style={{ fontWeight: 900, fontSize: 13 }}>Follow-Ups</div>
+                      <button
+                        onClick={createNewFollowUpAndOpen}
+                        style={{
+                          padding: "6px 10px",
+                          borderRadius: 10,
+                          border: "1px solid #ddd",
+                          background: "#fff",
+                          cursor: "pointer",
+                          fontWeight: 900,
+                          fontSize: 12,
+                        }}
+                      >
+                        + New
+                      </button>
+                    </div>
+
+                    {followUps.length === 0 ? (
+                      <div style={{ color: "#777", fontSize: 12, marginTop: 8 }}>No follow-ups yet.</div>
+                    ) : (
+                      <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                        {followUps.slice(0, 8).map((fu) => (
+                          <button
+                            key={fu.id}
+                            onClick={() => enterFollowUpModeForId(fu.id)}
+                            style={{
+                              textAlign: "left",
+                              padding: "8px 10px",
+                              borderRadius: 12,
+                              border: "1px solid #eee",
+                              background: "#fff",
+                              cursor: "pointer",
+                            }}
+                            title="Open Follow-Up Planner"
+                          >
+                            <div style={{ fontWeight: 900, fontSize: 12 }}>{followUpDisplayTitle(fu)}</div>
+                            <div style={{ fontSize: 12, color: "#666" }}>
+                              {fu.followUpType || "Email"} - Highlights: {fu.highlights?.length ?? 0}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
               </aside>
 
               {/* Right: editor + outputs */}
@@ -847,7 +1183,10 @@ export default function Page() {
 
                     {currentSession.mode === "past" ? (
                       <button
-                        onClick={enterFollowUpMode}
+                        onClick={() => {
+                          if (followUps.length) enterFollowUpModeForId(followUps[0].id);
+                          else createNewFollowUpAndOpen();
+                        }}
                         style={{
                           padding: "10px 12px",
                           borderRadius: 12,
@@ -856,7 +1195,7 @@ export default function Page() {
                           cursor: "pointer",
                           fontWeight: 900,
                         }}
-                        title="Open Follow-Up Planner For This Session"
+                        title="Open Follow-Up Planner"
                       >
                         Open Follow-Up Planner
                       </button>
@@ -873,7 +1212,7 @@ export default function Page() {
                           cursor: "pointer",
                           fontWeight: 900,
                         }}
-                        title="Return To Past Meeting View"
+                        title="Return To Past Meeting"
                       >
                         Back To Past Meeting
                       </button>
@@ -896,12 +1235,10 @@ export default function Page() {
                 </div>
 
                 <div className="recap-home-grid" style={{ marginTop: 16 }}>
-                  {/* Raw Notes */}
+                  {/* Notes */}
                   <div style={{ border: "1px solid #eee", borderRadius: 14, padding: 14 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-                      <div style={{ fontWeight: 900 }}>
-                        {currentSession.mode === "followUp" ? "Follow-Up Notes" : "Raw Notes"}
-                      </div>
+                      <div style={{ fontWeight: 900 }}>Raw Notes</div>
 
                       {currentSession.mode === "past" && !isEditingPastRawNotes ? (
                         <button
@@ -934,8 +1271,8 @@ export default function Page() {
                           lineHeight: 1.35,
                         }}
                       >
-                        <b>Editing Past Raw Notes</b> - You Are Changing The Historical Record. Outputs Will Regenerate
-                        When You Save.
+                        <b>Editing Past Raw Notes</b> - You are changing the historical record. Outputs regenerate when you
+                        save.
                       </div>
                     ) : null}
 
@@ -952,11 +1289,7 @@ export default function Page() {
                         }
                         patchSession({ rawNotes: e.target.value }, { clearRedo: true });
                       }}
-                      placeholder={
-                        currentSession.mode === "followUp"
-                          ? "Plan Your Follow-Up Here (Questions, Agenda, Talking Points, Next Steps)..."
-                          : "Paste Your Meeting Notes Here..."
-                      }
+                      placeholder={"Paste your meeting notes here..."}
                       style={{
                         width: "100%",
                         minHeight: 260,
@@ -1055,7 +1388,7 @@ export default function Page() {
                           cursor: checkpointsCount > 0 ? "pointer" : "not-allowed",
                           fontWeight: 800,
                         }}
-                        title="Undo Last Checkpoint"
+                        title="Undo last checkpoint"
                       >
                         Undo
                       </button>
@@ -1095,32 +1428,34 @@ export default function Page() {
                     <div style={{ marginTop: 8, color: "#777", fontSize: 12 }}>
                       {currentSession.mode === "current" ? (
                         <>
-                          Status: <b>Meeting Still Open</b>. Notes Are Auto-Saved Until You Press <b>End Meeting</b>.
+                          Status: <b>Meeting Still Open</b>. Notes auto-save until you press <b>End Meeting</b>.
                         </>
                       ) : currentSession.mode === "past" ? (
                         <>
-                          Status: <b>Past Meeting</b>. This Session Is Read-Only By Default To Preserve History.
+                          Status: <b>Past Meeting</b>. Read-only by default to preserve history.
                         </>
                       ) : (
                         <>
-                          Status: <b>Follow-Up Session</b>. Use Highlights + Prompts To Plan Your Next Touchpoint.
+                          Status: <b>Follow-Up Planner</b>. Select a follow-up, add highlights, then generate the draft
+                          email.
                         </>
                       )}
                     </div>
 
+                    {/* Past-only: Post-meeting notes + meeting outcome */}
                     {currentSession.mode === "past" ? (
                       <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 12 }}>
                         <div style={{ fontWeight: 900, marginBottom: 8 }}>Post-Meeting Notes</div>
 
                         <textarea
-                          value={(currentSession.postMeetingNotes ?? "") as string}
+                          value={String((currentSession as any).postMeetingNotes ?? "")}
                           onChange={(e) =>
                             patchSession({ postMeetingNotes: e.target.value } as any, { clearRedo: true })
                           }
-                          placeholder="Add Anything You Remembered After The Meeting (Clarifications, Follow-Ups, Context, Etc.)"
+                          placeholder="Anything you remembered after the meeting (clarifications, context, etc.)"
                           style={{
                             width: "100%",
-                            minHeight: 140,
+                            minHeight: 120,
                             borderRadius: 12,
                             border: "1px solid #ddd",
                             padding: 12,
@@ -1130,41 +1465,17 @@ export default function Page() {
                             background: "#fff",
                           }}
                         />
-                      </div>
-                    ) : null}
 
-                    {/* Follow-Up Planner Block */}
-                    {currentSession.mode === "followUp" && followUp ? (
-                      <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 12 }}>
-                        <div style={{ fontWeight: 900, marginBottom: 8 }}>Follow-Up Planner</div>
+                        <div style={{ height: 12 }} />
 
-                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                        <div style={{ fontWeight: 900, marginBottom: 8 }}>Meeting Outcome</div>
+
+                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
                           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                            <span style={{ color: "#666", fontSize: 13 }}>Follow-Up Type</span>
+                            <span style={{ color: "#666", fontSize: 13 }}>Result</span>
                             <select
-                              value={followUp.followUpType}
-                              onChange={(e) => updateFollowUp({ followUpType: e.target.value as FollowUpType })}
-                              style={{
-                                padding: "10px 12px",
-                                borderRadius: 10,
-                                border: "1px solid #ddd",
-                                background: "#fff",
-                              }}
-                            >
-                              <option value="Email">Email</option>
-                              <option value="Phone Call">Phone Call</option>
-                              <option value="In-Person Meeting">In-Person Meeting</option>
-                              <option value="Video Call">Video Call</option>
-                              <option value="Text Message">Text Message</option>
-                              <option value="Other">Other</option>
-                            </select>
-                          </div>
-
-                          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                            <span style={{ color: "#666", fontSize: 13 }}>Meeting Result</span>
-                            <select
-                              value={followUp.meetingResult}
-                              onChange={(e) => updateFollowUp({ meetingResult: e.target.value as MeetingResult })}
+                              value={getPastMeta(currentSession).meetingResult}
+                              onChange={(e) => patchPastMeta({ meetingResult: e.target.value as MeetingResult })}
                               style={{
                                 padding: "10px 12px",
                                 borderRadius: 10,
@@ -1182,11 +1493,10 @@ export default function Page() {
                         </div>
 
                         <div style={{ marginTop: 10 }}>
-                          <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 6 }}>Meeting Outcome</div>
                           <textarea
-                            value={followUp.meetingOutcome}
-                            onChange={(e) => updateFollowUp({ meetingOutcome: e.target.value })}
-                            placeholder="Outcome Notes (What Happened, What Changed, What Was Decided, Etc.)"
+                            value={getPastMeta(currentSession).meetingOutcome}
+                            onChange={(e) => patchPastMeta({ meetingOutcome: e.target.value })}
+                            placeholder="Outcome notes (what changed, decisions made, blockers, etc.)"
                             style={{
                               width: "100%",
                               minHeight: 90,
@@ -1200,415 +1510,542 @@ export default function Page() {
                             }}
                           />
                         </div>
+                      </div>
+                    ) : null}
 
-                        <div style={{ marginTop: 10 }}>
-                          <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 6 }}>Follow-Up Focus (AI Prompt)</div>
-                          <textarea
-                            value={followUp.focusPrompt}
-                            onChange={(e) => updateFollowUp({ focusPrompt: e.target.value })}
-                            placeholder="What Is The Purpose Of This Follow-Up Based On Your Highlights?"
-                            style={{
-                              width: "100%",
-                              minHeight: 90,
-                              borderRadius: 12,
-                              border: "1px solid #ddd",
-                              padding: 12,
-                              fontSize: 14,
-                              lineHeight: 1.4,
-                              resize: "vertical",
-                              background: "#fff",
-                            }}
-                          />
-                        </div>
+                    {/* Follow-Up Planner (controls only - email output shows in Outputs panel) */}
+                    {currentSession.mode === "followUp" ? (
+                      <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 12 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                          <div style={{ fontWeight: 900 }}>Follow-Up Planner</div>
 
-                        <div style={{ marginTop: 10 }}>
-                          <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 6 }}>Email Instructions (AI Prompt)</div>
-                          <textarea
-                            value={followUp.emailPrompt}
-                            onChange={(e) => updateFollowUp({ emailPrompt: e.target.value })}
-                            placeholder="What Kind Of Email Do You Want? (Short, Firm, Friendly, Include A CTA, Etc.)"
-                            style={{
-                              width: "100%",
-                              minHeight: 90,
-                              borderRadius: 12,
-                              border: "1px solid #ddd",
-                              padding: 12,
-                              fontSize: 14,
-                              lineHeight: 1.4,
-                              resize: "vertical",
-                              background: "#fff",
-                            }}
-                          />
-                        </div>
-
-                        <div style={{ marginTop: 12 }}>
-                          <div style={{ fontWeight: 900, marginBottom: 8 }}>Highlights</div>
-
-                          {followUpActionRows.length ? (
-                            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                              {followUpActionRows.slice(0, 12).map((row, idx) => (
-                                <div
-                                  key={`${row}-${idx}`}
-                                  style={{
-                                    border: "1px solid #eee",
-                                    borderRadius: 12,
-                                    padding: 10,
-                                    display: "flex",
-                                    gap: 10,
-                                    alignItems: "center",
-                                    justifyContent: "space-between",
-                                  }}
-                                >
-                                  <div style={{ fontSize: 13, lineHeight: 1.35, flex: 1 }}>{row}</div>
-
-                                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                                    <select
-                                      defaultValue={"None"}
-                                      onChange={(e) => addHighlight(row, e.target.value as HighlightTag)}
-                                      style={{
-                                        padding: "8px 10px",
-                                        borderRadius: 10,
-                                        border: "1px solid #ddd",
-                                        background: "#fff",
-                                        fontWeight: 800,
-                                      }}
-                                      title="Add As Highlight With Tag"
-                                    >
-                                      <option value="None">Add Highlight...</option>
-                                      <option value="Email">Email</option>
-                                      <option value="Call">Call</option>
-                                      <option value="Meeting">Meeting</option>
-                                      <option value="Urgent">Urgent</option>
-                                      <option value="Other">Other</option>
-                                    </select>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          ) : (
-                            <div style={{ color: "#777", fontSize: 13 }}>
-                              No Action Items Found Yet. Generate Outputs First, Then Add Highlights.
-                            </div>
-                          )}
-
-                          <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                            <input
-                              value={newHighlightText}
-                              onChange={(e) => setNewHighlightText(e.target.value)}
-                              placeholder="Add A Custom Highlight..."
-                              style={{
-                                flex: 1,
-                                minWidth: 220,
-                                padding: "10px 12px",
-                                borderRadius: 12,
-                                border: "1px solid #ddd",
-                              }}
-                            />
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
                             <button
-                              onClick={() => {
-                                addHighlight(newHighlightText, "Other");
-                                setNewHighlightText("");
-                              }}
+                              onClick={createNewFollowUpAndOpen}
                               style={{
-                                padding: "10px 12px",
-                                borderRadius: 12,
+                                padding: "8px 10px",
+                                borderRadius: 10,
                                 border: "1px solid #ddd",
                                 background: "#fff",
                                 cursor: "pointer",
                                 fontWeight: 900,
+                                fontSize: 13,
                               }}
+                              title="Create a new follow-up for this past meeting"
                             >
-                              Add
+                              + New Follow-Up
                             </button>
-                          </div>
 
-                          {followUp.highlights.length ? (
-                            <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
-                              {followUp.highlights.map((h) => (
-                                <div
-                                  key={h.id}
-                                  style={{
-                                    border: "1px solid #eee",
-                                    borderRadius: 12,
-                                    padding: 10,
-                                    display: "flex",
-                                    gap: 10,
-                                    alignItems: "center",
-                                    justifyContent: "space-between",
-                                  }}
-                                >
-                                  <div style={{ fontSize: 13, lineHeight: 1.35, flex: 1 }}>
-                                    <b>{h.tag === "None" ? "Other" : h.tag}</b>: {h.text}
-                                  </div>
-
-                                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                                    <select
-                                      value={h.tag}
-                                      onChange={(e) => updateHighlightTag(h.id, e.target.value as HighlightTag)}
-                                      style={{
-                                        padding: "8px 10px",
-                                        borderRadius: 10,
-                                        border: "1px solid #ddd",
-                                        background: "#fff",
-                                        fontWeight: 800,
-                                      }}
-                                    >
-                                      <option value="None">None</option>
-                                      <option value="Email">Email</option>
-                                      <option value="Call">Call</option>
-                                      <option value="Meeting">Meeting</option>
-                                      <option value="Urgent">Urgent</option>
-                                      <option value="Other">Other</option>
-                                    </select>
-
-                                    <button
-                                      onClick={() => removeHighlight(h.id)}
-                                      style={{
-                                        padding: "8px 10px",
-                                        borderRadius: 10,
-                                        border: "1px solid #ddd",
-                                        background: "#fff",
-                                        cursor: "pointer",
-                                        fontWeight: 900,
-                                      }}
-                                      title="Remove Highlight"
-                                    >
-                                      Remove
-                                    </button>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          ) : null}
-
-                          <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
                             <button
-                              onClick={generateFollowUpEmailFromHighlights}
+                              onClick={scheduleMeetingForActiveFollowUp}
+                              disabled={!activeFollowUp}
                               style={{
-                                padding: "10px 14px",
-                                borderRadius: 12,
+                                padding: "8px 10px",
+                                borderRadius: 10,
                                 border: "1px solid #111",
-                                background: "#111",
-                                color: "#fff",
-                                cursor: "pointer",
+                                background: activeFollowUp ? "#111" : "#eee",
+                                color: activeFollowUp ? "#fff" : "#777",
+                                cursor: activeFollowUp ? "pointer" : "not-allowed",
                                 fontWeight: 900,
+                                fontSize: 13,
                               }}
-                              title="Builds Email From Highlights + Prompts (Uses Type + Tone Selections)"
+                              title="Creates a new Current Meeting session in the same folder and seeds it with a prep template"
                             >
-                              Generate Email From Highlights
+                              Schedule Meeting For This Follow-Up
                             </button>
-
-                            <div style={{ color: "#777", fontSize: 12, alignSelf: "center" }}>
-                              Tip: Pick Your Highlights First, Then Generate.
-                            </div>
                           </div>
                         </div>
+
+                        {followUps.length ? (
+                          <div
+                            style={{
+                              marginTop: 10,
+                              display: "flex",
+                              gap: 10,
+                              flexWrap: "wrap",
+                              alignItems: "center",
+                            }}
+                          >
+                            <span style={{ color: "#666", fontSize: 13 }}>Active Follow-Up</span>
+                            <select
+                              value={activeFollowUpId ?? ""}
+                              onChange={(e) => setActiveFollowUpId(e.target.value)}
+                              style={{
+                                padding: "10px 12px",
+                                borderRadius: 10,
+                                border: "1px solid #ddd",
+                                background: "#fff",
+                                minWidth: 220,
+                              }}
+                            >
+                              {followUps.map((fu) => (
+                                <option key={fu.id} value={fu.id}>
+                                  {followUpDisplayTitle(fu)}
+                                </option>
+                              ))}
+                            </select>
+
+                            {activeFollowUp ? (
+                              <button
+                                onClick={() => removeFollowUp(activeFollowUp.id)}
+                                style={{
+                                  padding: "10px 12px",
+                                  borderRadius: 10,
+                                  border: "1px solid #ddd",
+                                  background: "#fff",
+                                  cursor: "pointer",
+                                  fontWeight: 900,
+                                }}
+                                title="Delete this follow-up"
+                              >
+                                Delete Follow-Up
+                              </button>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <div style={{ marginTop: 10, color: "#777", fontSize: 13 }}>
+                            No follow-ups yet. Click <b>+ New Follow-Up</b> to create one.
+                          </div>
+                        )}
+
+                        {activeFollowUp ? (
+                          <div style={{ marginTop: 12, border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
+                            <div style={{ fontWeight: 900 }}>Details</div>
+
+                            <div style={{ marginTop: 10 }}>
+                              <div style={{ color: "#666", fontSize: 13, marginBottom: 6 }}>Title</div>
+                              <input
+                                value={activeFollowUp.title}
+                                onChange={(e) => updateFollowUp(activeFollowUp.id, { title: e.target.value })}
+                                placeholder="Follow-Up Title"
+                                style={{
+                                  width: "100%",
+                                  padding: "12px 12px",
+                                  borderRadius: 12,
+                                  border: "1px solid #ddd",
+                                  fontWeight: 800,
+                                }}
+                              />
+                            </div>
+
+                            <div style={{ marginTop: 10 }}>
+                              <div style={{ color: "#666", fontSize: 13, marginBottom: 6 }}>Follow-Up Type</div>
+                              <select
+                                value={activeFollowUp.followUpType}
+                                onChange={(e) =>
+                                  updateFollowUp(activeFollowUp.id, {
+                                    followUpType: e.target.value as FollowUpType,
+                                  })
+                                }
+                                style={{
+                                  padding: "10px 12px",
+                                  borderRadius: 10,
+                                  border: "1px solid #ddd",
+                                  background: "#fff",
+                                }}
+                              >
+                                <option value="Email">Email</option>
+                                <option value="Phone Call">Phone Call</option>
+                                <option value="In-Person Meeting">In-Person Meeting</option>
+                                <option value="Video Call">Video Call</option>
+                                <option value="Text Message">Text Message</option>
+                                <option value="Other">Other</option>
+                              </select>
+                            </div>
+
+                            <div style={{ marginTop: 12 }}>
+                              <div style={{ color: "#666", fontSize: 13, marginBottom: 6 }}>
+                                Focus Prompt (optional)
+                              </div>
+                              <textarea
+                                value={activeFollowUp.focusPrompt}
+                                onChange={(e) => updateFollowUp(activeFollowUp.id, { focusPrompt: e.target.value })}
+                                placeholder="What should this follow-up focus on?"
+                                style={{
+                                  width: "100%",
+                                  minHeight: 80,
+                                  borderRadius: 12,
+                                  border: "1px solid #ddd",
+                                  padding: 12,
+                                  fontSize: 14,
+                                  lineHeight: 1.4,
+                                  resize: "vertical",
+                                  background: "#fff",
+                                }}
+                              />
+                            </div>
+
+                            <div style={{ marginTop: 12 }}>
+                              <div style={{ color: "#666", fontSize: 13, marginBottom: 6 }}>
+                                Email Instructions (optional)
+                              </div>
+                              <textarea
+                                value={activeFollowUp.emailPrompt}
+                                onChange={(e) => updateFollowUp(activeFollowUp.id, { emailPrompt: e.target.value })}
+                                placeholder="Any specific instructions for the email (tone, asks, constraints, etc.)"
+                                style={{
+                                  width: "100%",
+                                  minHeight: 80,
+                                  borderRadius: 12,
+                                  border: "1px solid #ddd",
+                                  padding: 12,
+                                  fontSize: 14,
+                                  lineHeight: 1.4,
+                                  resize: "vertical",
+                                  background: "#fff",
+                                }}
+                              />
+                            </div>
+
+                            {/* Highlights */}
+                            <div style={{ marginTop: 14, borderTop: "1px solid #eee", paddingTop: 12 }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                                <div style={{ fontWeight: 900 }}>Highlights</div>
+                                <div style={{ color: "#666", fontSize: 12 }}>
+                                  Selected: <b>{activeFollowUp.highlights?.length ?? 0}</b>
+                                </div>
+                              </div>
+
+                              <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                <input
+                                  value={newHighlightText}
+                                  onChange={(e) => setNewHighlightText(e.target.value)}
+                                  placeholder="Add a highlight to follow up on..."
+                                  style={{
+                                    flex: 1,
+                                    minWidth: 220,
+                                    padding: "10px 12px",
+                                    borderRadius: 10,
+                                    border: "1px solid #ddd",
+                                  }}
+                                />
+
+                                <button
+                                  onClick={() => {
+                                    addHighlightToFollowUp(activeFollowUp, newHighlightText, "None");
+                                    setNewHighlightText("");
+                                  }}
+                                  disabled={!newHighlightText.trim()}
+                                  style={{
+                                    padding: "10px 12px",
+                                    borderRadius: 10,
+                                    border: "1px solid #111",
+                                    background: newHighlightText.trim() ? "#111" : "#eee",
+                                    color: newHighlightText.trim() ? "#fff" : "#777",
+                                    cursor: newHighlightText.trim() ? "pointer" : "not-allowed",
+                                    fontWeight: 900,
+                                  }}
+                                >
+                                  Add
+                                </button>
+                              </div>
+
+                              {activeFollowUp.highlights && activeFollowUp.highlights.length ? (
+                                <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                                  {activeFollowUp.highlights.map((h) => (
+                                    <div
+                                      key={h.id}
+                                      style={{
+                                        border: "1px solid #eee",
+                                        borderRadius: 12,
+                                        padding: 10,
+                                        display: "flex",
+                                        gap: 10,
+                                        alignItems: "flex-start",
+                                        justifyContent: "space-between",
+                                      }}
+                                    >
+                                      <div style={{ flex: 1 }}>
+                                        <div style={{ fontWeight: 800, fontSize: 13 }}>{h.text}</div>
+                                        <div
+                                          style={{
+                                            marginTop: 8,
+                                            display: "flex",
+                                            gap: 8,
+                                            alignItems: "center",
+                                            flexWrap: "wrap",
+                                          }}
+                                        >
+                                          <span style={{ color: "#666", fontSize: 12 }}>Tag</span>
+                                          <select
+                                            value={h.tag}
+                                            onChange={(e) =>
+                                              updateHighlightTag(activeFollowUp, h.id, e.target.value as HighlightTag)
+                                            }
+                                            style={{
+                                              padding: "8px 10px",
+                                              borderRadius: 10,
+                                              border: "1px solid #ddd",
+                                              background: "#fff",
+                                              fontSize: 13,
+                                            }}
+                                          >
+                                            <option value="None">None</option>
+                                            <option value="Email">Email</option>
+                                            <option value="Call">Call</option>
+                                            <option value="Meeting">Meeting</option>
+                                            <option value="Urgent">Urgent</option>
+                                            <option value="Other">Other</option>
+                                          </select>
+                                        </div>
+                                      </div>
+
+                                      <button
+                                        onClick={() => removeHighlightFromFollowUp(activeFollowUp, h.id)}
+                                        style={{
+                                          padding: "8px 10px",
+                                          borderRadius: 10,
+                                          border: "1px solid #ddd",
+                                          background: "#fff",
+                                          cursor: "pointer",
+                                          fontWeight: 900,
+                                          fontSize: 12,
+                                          height: "fit-content",
+                                        }}
+                                        title="Remove highlight"
+                                      >
+                                        Remove
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <div style={{ marginTop: 10, color: "#777", fontSize: 13 }}>
+                                  No highlights yet. Add a few and then generate the email.
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Email settings + generate (no textarea here) */}
+                            <div style={{ marginTop: 14, borderTop: "1px solid #eee", paddingTop: 12 }}>
+                              <div style={{ fontWeight: 900, marginBottom: 10 }}>Email Draft</div>
+
+                              <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+                                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                                  <span style={{ color: "#666", fontSize: 13 }}>Type</span>
+                                  <select
+                                    value={emailType}
+                                    onChange={(e) => setEmailType(e.target.value as EmailType)}
+                                    style={{
+                                      padding: "10px 12px",
+                                      borderRadius: 10,
+                                      border: "1px solid #ddd",
+                                      background: "#fff",
+                                    }}
+                                  >
+                                    <option value="followUp">Follow-Up</option>
+                                    <option value="question">Question</option>
+                                    <option value="actionComplete">Action Complete</option>
+                                    <option value="actionClarification">Clarification</option>
+                                    <option value="concern">Concern</option>
+                                  </select>
+                                </div>
+
+                                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                                  <span style={{ color: "#666", fontSize: 13 }}>Tone</span>
+                                  <select
+                                    value={emailTone}
+                                    onChange={(e) => setEmailTone(e.target.value as EmailTone)}
+                                    style={{
+                                      padding: "10px 12px",
+                                      borderRadius: 10,
+                                      border: "1px solid #ddd",
+                                      background: "#fff",
+                                    }}
+                                  >
+                                    <option value="professional">Professional</option>
+                                    <option value="warm">Warm</option>
+                                    <option value="friendlyProfessional">Friendly Professional</option>
+                                    <option value="casual">Casual</option>
+                                  </select>
+                                </div>
+
+                                <button
+                                  onClick={generateEmailDraftForActiveFollowUp}
+                                  disabled={!activeFollowUp}
+                                  style={{
+                                    padding: "10px 14px",
+                                    borderRadius: 12,
+                                    border: "1px solid #111",
+                                    background: activeFollowUp ? "#111" : "#eee",
+                                    color: activeFollowUp ? "#fff" : "#777",
+                                    cursor: activeFollowUp ? "pointer" : "not-allowed",
+                                    fontWeight: 900,
+                                  }}
+                                  title="Generates an email draft from the selected highlights + prompts"
+                                >
+                                  Generate Email Draft
+                                </button>
+                              </div>
+
+                              <div style={{ marginTop: 8, color: "#777", fontSize: 12 }}>
+                                The generated email appears in the Outputs panel on the right.
+                              </div>
+                            </div>
+                          </div>
+                        ) : null}
                       </div>
                     ) : null}
                   </div>
 
-                  {/* Output */}
+                  {/* Outputs */}
                   <div style={{ border: "1px solid #eee", borderRadius: 14, padding: 14 }}>
-                    <div style={{ fontWeight: 900, marginBottom: 8 }}>Output</div>
+                    <div style={{ fontWeight: 900, marginBottom: 10 }}>Outputs</div>
 
-                    <div style={{ fontWeight: 900, fontSize: 13, marginBottom: 6 }}>Summary</div>
-                    <pre
-                      style={{
-                        whiteSpace: "pre-wrap",
-                        border: "1px solid #ddd",
-                        borderRadius: 12,
-                        padding: 12,
-                        minHeight: 120,
-                        fontSize: 13,
-                        lineHeight: 1.35,
-                        background: "#fafafa",
-                        margin: 0,
-                      }}
-                    >
-                      {currentSession.outputs.summary?.trim()
-                        ? currentSession.outputs.summary
-                        : "Click Generate To Create A Summary."}
-                    </pre>
-
-                    <div style={{ height: 12 }} />
-
-                    <div style={{ fontWeight: 900, fontSize: 13, marginBottom: 6 }}>Action Items (From Notes)</div>
-                    <pre
-                      style={{
-                        whiteSpace: "pre-wrap",
-                        border: "1px solid #ddd",
-                        borderRadius: 12,
-                        padding: 12,
-                        minHeight: 140,
-                        fontSize: 13,
-                        lineHeight: 1.35,
-                        background: "#fafafa",
-                        margin: 0,
-                      }}
-                    >
-                      {currentSession.outputs.actionItems?.trim()
-                        ? currentSession.outputs.actionItems
-                        : "Click Generate To Extract Action Items."}
-                    </pre>
-
-                    <div style={{ height: 12 }} />
-
-                    <div style={{ fontWeight: 900, fontSize: 13, marginBottom: 8 }}>Draft Email</div>
-
-                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
-                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                        <span style={{ color: "#666", fontSize: 13 }}>Type</span>
-                        <select
-                          value={emailType}
-                          onChange={(e) => setEmailType(e.target.value as any)}
+                    {/* Summary */}
+                    {currentSession.mode !== "followUp" ? (
+                      <div style={{ marginBottom: 12 }}>
+                        <div style={{ fontWeight: 900, marginBottom: 8 }}>Summary</div>
+                        <textarea
+                          value={currentSession.outputs.summary || ""}
+                          readOnly
+                          placeholder="Summary output..."
                           style={{
-                            padding: "10px 12px",
-                            borderRadius: 10,
+                            width: "100%",
+                            minHeight: 160,
+                            borderRadius: 12,
                             border: "1px solid #ddd",
-                            background: "#fff",
+                            padding: 12,
+                            fontSize: 14,
+                            lineHeight: 1.4,
+                            resize: "vertical",
+                            background: "#fafafa",
                           }}
-                        >
-                          <option value="followUp">Follow-Up</option>
-                          <option value="question">Question</option>
-                          <option value="actionComplete">Action Item Completion</option>
-                          <option value="actionClarification">Action Item Clarification</option>
-                          <option value="concern">Concern</option>
-                        </select>
+                        />
                       </div>
+                    ) : null}
 
-                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                        <span style={{ color: "#666", fontSize: 13 }}>Tone</span>
-                        <select
-                          value={emailTone}
-                          onChange={(e) => setEmailTone(e.target.value as any)}
+                    {/* Action Items */}
+                    {currentSession.mode !== "followUp" ? (
+                      <div style={{ marginBottom: 12 }}>
+                        <div style={{ fontWeight: 900, marginBottom: 8 }}>Action Items</div>
+                        <textarea
+                          value={currentSession.outputs.actionItems || ""}
+                          readOnly
+                          placeholder="Action items output..."
                           style={{
-                            padding: "10px 12px",
-                            borderRadius: 10,
+                            width: "100%",
+                            minHeight: 220,
+                            borderRadius: 12,
                             border: "1px solid #ddd",
-                            background: "#fff",
+                            padding: 12,
+                            fontSize: 14,
+                            lineHeight: 1.4,
+                            resize: "vertical",
+                            background: "#fafafa",
                           }}
-                        >
-                          <option value="professional">Professional</option>
-                          <option value="warm">Warm</option>
-                          <option value="friendlyProfessional">Friendly Professional</option>
-                          <option value="casual">Casual</option>
-                        </select>
+                        />
+
+                        {followUpActionRows.length ? (
+                          <div style={{ marginTop: 10, borderTop: "1px solid #eee", paddingTop: 10 }}>
+                            <div style={{ color: "#666", fontSize: 13, marginBottom: 8 }}>Quick view (parsed)</div>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                              {followUpActionRows.slice(0, 10).map((row, idx) => (
+                                <div key={idx} style={{ fontSize: 13 }}>
+                                  - {row}
+                                </div>
+                              ))}
+                              {followUpActionRows.length > 10 ? (
+                                <div style={{ color: "#777", fontSize: 12 }}>
+                                  (+{followUpActionRows.length - 10} more)
+                                </div>
+                              ) : null}
+                            </div>
+                          </div>
+                        ) : null}
                       </div>
+                    ) : null}
 
-                      <button
-                        onClick={handleGenerateNow}
-                        disabled={!currentSession.rawNotes.trim()}
-                        style={{
-                          padding: "10px 14px",
-                          borderRadius: 10,
-                          border: "1px solid #111",
-                          background: currentSession.rawNotes.trim() ? "#111" : "#eee",
-                          color: currentSession.rawNotes.trim() ? "#fff" : "#777",
-                          cursor: currentSession.rawNotes.trim() ? "pointer" : "not-allowed",
-                          fontWeight: 900,
-                        }}
-                        title="Uses The Current Type + Tone Selections"
-                      >
-                        Generate Email Draft
-                      </button>
-                    </div>
-
-                    <pre
-                      style={{
-                        whiteSpace: "pre-wrap",
-                        border: "1px solid #ddd",
-                        borderRadius: 12,
-                        padding: 12,
-                        minHeight: 160,
-                        fontSize: 13,
-                        lineHeight: 1.35,
-                        background: "#fafafa",
-                        margin: 0,
-                      }}
-                    >
-                      {currentSession.outputs.email?.trim()
-                        ? currentSession.outputs.email
-                        : "Pick A Type + Tone, Then Generate Email Draft."}
-                    </pre>
+                    {/* Email (followUp mode output) */}
+                    {currentSession.mode === "followUp" ? (
+                      <div>
+                        <div style={{ fontWeight: 900, marginBottom: 8 }}>Email Draft</div>
+                        <textarea
+                          value={currentSession.outputs.email || ""}
+                          readOnly
+                          placeholder="Generate an email draft in the Follow-Up Planner..."
+                          style={{
+                            width: "100%",
+                            minHeight: 260,
+                            borderRadius: 12,
+                            border: "1px solid #ddd",
+                            padding: 12,
+                            fontSize: 14,
+                            lineHeight: 1.4,
+                            resize: "vertical",
+                            background: "#fafafa",
+                          }}
+                        />
+                      </div>
+                    ) : null}
                   </div>
                 </div>
+
+                {/* Past raw-notes edit confirm modal */}
+                {showPastEditConfirm ? (
+                  <div
+                    style={{
+                      position: "fixed",
+                      inset: 0,
+                      background: "rgba(0,0,0,0.4)",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      padding: 18,
+                      zIndex: 50,
+                    }}
+                  >
+                    <div style={{ width: "100%", maxWidth: 560, background: "#fff", borderRadius: 14, padding: 14 }}>
+                      <div style={{ fontWeight: 900, fontSize: 16 }}>Edit Past Raw Notes?</div>
+                      <div style={{ marginTop: 8, color: "#444", fontSize: 13, lineHeight: 1.4 }}>
+                        This past meeting is treated as a historical record. Editing it will regenerate outputs when you
+                        save.
+                      </div>
+
+                      <div
+                        style={{
+                          marginTop: 12,
+                          display: "flex",
+                          gap: 10,
+                          justifyContent: "flex-end",
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        <button
+                          onClick={cancelPastEdit}
+                          style={{
+                            padding: "10px 14px",
+                            borderRadius: 12,
+                            border: "1px solid #ddd",
+                            background: "#fff",
+                            cursor: "pointer",
+                            fontWeight: 800,
+                          }}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={confirmEnablePastEdit}
+                          style={{
+                            padding: "10px 14px",
+                            borderRadius: 12,
+                            border: "1px solid #111",
+                            background: "#111",
+                            color: "#fff",
+                            cursor: "pointer",
+                            fontWeight: 900,
+                          }}
+                        >
+                          Yes, Enable Editing
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </div>
           )}
         </section>
-      ) : null}
-
-      {/* Module 3 (partial): Past edit confirmation modal */}
-      {screen.name === "session" && currentSession?.mode === "past" && showPastEditConfirm ? (
-        <div
-          role="dialog"
-          aria-modal="true"
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.35)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 18,
-            zIndex: 50,
-          }}
-          onClick={() => setShowPastEditConfirm(false)}
-        >
-          <div
-            style={{
-              width: "100%",
-              maxWidth: 520,
-              background: "#fff",
-              borderRadius: 14,
-              border: "1px solid #eee",
-              padding: 16,
-              boxShadow: "0 10px 30px rgba(0,0,0,0.15)",
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div style={{ fontWeight: 900, fontSize: 16 }}>Edit Past Raw Notes?</div>
-
-            <div style={{ marginTop: 10, color: "#444", fontSize: 13, lineHeight: 1.45 }}>
-              Past Meetings Are Intended To Be An Immutable Record Of What Happened.
-              <br />
-              <br />
-              If You Continue, You Will Be Changing The Historical Raw Notes. RecapKit Will Regenerate Outputs From The
-              Updated Notes.
-            </div>
-
-            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 14, flexWrap: "wrap" }}>
-              <button
-                onClick={() => setShowPastEditConfirm(false)}
-                style={{
-                  padding: "10px 14px",
-                  borderRadius: 12,
-                  border: "1px solid #ddd",
-                  background: "#fff",
-                  cursor: "pointer",
-                  fontWeight: 800,
-                }}
-              >
-                Cancel
-              </button>
-
-              <button
-                onClick={confirmEnablePastEdit}
-                style={{
-                  padding: "10px 14px",
-                  borderRadius: 12,
-                  border: "1px solid #111",
-                  background: "#111",
-                  color: "#fff",
-                  cursor: "pointer",
-                  fontWeight: 900,
-                }}
-              >
-                Yes, Edit Raw Notes
-              </button>
-            </div>
-          </div>
-        </div>
       ) : null}
     </main>
   );
