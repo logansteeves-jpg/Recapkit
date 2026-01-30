@@ -378,7 +378,7 @@ export default function Page() {
     emailTone: EmailTone;
   }): Promise<string | null> {
     try {
-      const res = await fetch("/api/generate/follow-up", {
+      const res = await fetch("/api/follow-up", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(params),

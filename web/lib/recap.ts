@@ -1,4 +1,7 @@
 // web/lib/recap.ts
+// Deterministic, local-only recap helpers (Phase 1).
+// Summary + Action Items are generated via /api/generate using these functions.
+// Follow-Up email drafts are generated via /api/generate/follow-up using makeFollowUpEmailDraftFromHighlights.
 
 export type ActionItem = {
   text: string; // the action itself (cleaned)
@@ -49,22 +52,37 @@ function normalizeLines(raw: string): string[] {
     .filter(Boolean);
 }
 
+function safeString(x: any): string {
+  return typeof x === "string" ? x : String(x ?? "");
+}
+
+function escapeRegExp(s: string) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function includesWord(haystackLower: string, wordLower: string): boolean {
+  // exact word boundary match (prevents "call" matching "callback", etc.)
+  const re = new RegExp(`\\b${escapeRegExp(wordLower)}\\b`, "i");
+  return re.test(haystackLower);
+}
+
 export function parseBullets(rawNotes: string): string[] {
   const lines = normalizeLines(rawNotes);
 
   // Treat any line as a "bullet" for now. (Later: timestamps + quick marks)
   return lines.map((l) => {
-    // Strip leading bullet markers like "-", "*", "•", "1.", etc.
-    return l.replace(/^(\*|-|•|\d+\.)\s+/, "");
+    // Strip leading bullet markers like "-", "*", "•", "1.", "1)", etc.
+    return l.replace(/^(\*|-|•|\d+[.)])\s+/, "").trim();
   });
 }
 
 // Very simple placeholder extraction: find lines that look like actions
 export function parseActionItems(bullets: string[]): ActionItem[] {
-  const actionVerbs = [
+  // Phrase-based verbs can use includes; single-word verbs should use word boundaries.
+  const phraseVerbs = ["follow up", "touch base"]; // keep as phrases
+  const singleWordVerbs = [
     "send",
     "share",
-    "follow up",
     "schedule",
     "book",
     "confirm",
@@ -118,9 +136,9 @@ export function parseActionItems(bullets: string[]): ActionItem[] {
     const will = text.match(/^([A-Z][a-zA-Z'.-]{1,20})\s+will\b/);
     if (will) return will[1].trim();
 
-    // fallback: "I will" / "We will"
-    if (lower.includes("i will")) return "Me";
-    if (lower.includes("we will")) return "We";
+    // fallback: "I will" / "We will" (word-boundary-ish)
+    if (/\bi will\b/i.test(lower)) return "Me";
+    if (/\bwe will\b/i.test(lower)) return "We";
 
     return undefined;
   }
@@ -144,7 +162,12 @@ export function parseActionItems(bullets: string[]): ActionItem[] {
   return bullets
     .filter((b) => {
       const lower = b.toLowerCase();
-      return actionVerbs.some((v) => lower.includes(v));
+
+      // phrase verbs
+      if (phraseVerbs.some((v) => lower.includes(v))) return true;
+
+      // single-word verbs as whole words
+      return singleWordVerbs.some((v) => includesWord(lower, v));
     })
     .map((b) => {
       const cleaned = b.trim();
@@ -169,8 +192,8 @@ export function detectActionIssues(items: ActionItem[]): ActionIssue[] {
       textLower.includes("@") ||
       textLower.includes("owner:") ||
       textLower.includes("assigned to") ||
-      textLower.includes("i will") ||
-      textLower.includes("we will");
+      /\bi will\b/i.test(textLower) ||
+      /\bwe will\b/i.test(textLower);
 
     const hasDue =
       Boolean(item.due) ||
@@ -271,6 +294,11 @@ export function makeSummary(bullets: string[]): string {
   return lines.join("\n");
 }
 
+/**
+ * Deterministic email template generator.
+ * In Phase 1, only Follow-Up uses this (via makeFollowUpEmailDraftFromHighlights).
+ * /api/generate should not call this.
+ */
 export function makeEmailDraft(bullets: string[], opts?: MakeEmailDraftOptions): string {
   const type: EmailType = opts?.type ?? "followUp";
   const tone: EmailTone = opts?.tone ?? "professional";
@@ -352,38 +380,47 @@ export function makeFollowUpEmailDraftFromHighlights(args: MakeFollowUpEmailDraf
 
   const contextLines: string[] = [];
 
-  if (args.followUpType && String(args.followUpType).trim()) {
-    contextLines.push(`Follow-Up Type: ${String(args.followUpType).trim()}`);
+  const followUpType = safeString(args.followUpType).trim();
+  const focusPrompt = safeString(args.focusPrompt).trim();
+  const emailPrompt = safeString(args.emailPrompt).trim();
+  const meetingResult = safeString(args.meetingResult).trim();
+  const meetingOutcome = safeString(args.meetingOutcome).trim();
+
+  if (followUpType) {
+    contextLines.push(`Follow-Up Type: ${followUpType}`);
   }
 
-  if (args.meetingResult && String(args.meetingResult).trim() && String(args.meetingResult) !== "Pending") {
-    contextLines.push(`Meeting Result: ${String(args.meetingResult).trim()}`);
+  if (meetingResult && meetingResult !== "Pending") {
+    contextLines.push(`Meeting Result: ${meetingResult}`);
   }
 
-  if (args.focusPrompt && args.focusPrompt.trim()) {
-    contextLines.push(`Focus: ${args.focusPrompt.trim()}`);
+  if (focusPrompt) {
+    contextLines.push(`Focus: ${focusPrompt}`);
   }
 
-  if (args.meetingOutcome && args.meetingOutcome.trim()) {
-    contextLines.push(`Outcome: ${args.meetingOutcome.trim()}`);
+  if (meetingOutcome) {
+    contextLines.push(`Outcome: ${meetingOutcome}`);
   }
 
-  if (args.emailPrompt && args.emailPrompt.trim()) {
-    contextLines.push(`Email Instructions: ${args.emailPrompt.trim()}`);
+  if (emailPrompt) {
+    contextLines.push(`Email Instructions: ${emailPrompt}`);
   }
 
+  // Keep selection stable - do not mutate/derive from raw notes here.
   const bullets: string[] =
     Array.isArray(args.highlights) && args.highlights.length
       ? args.highlights
+          .slice(0, 50) // hard cap for safety
           .map((h) => {
-            const tag = (h.tag ?? "").trim();
+            const tag = safeString(h.tag).trim();
+            const text = safeString(h.text).trim();
+            if (!text) return "";
             const prefix = tag && tag !== "None" ? `[${tag}] ` : "";
-            return `${prefix}${(h.text ?? "").trim()}`.trim();
+            return `${prefix}${text}`.trim();
           })
           .filter(Boolean)
       : ["(No Follow-Up Items Selected Yet)"];
 
-  const followUpType = (args.followUpType ?? "").trim();
   const subjectOverride = followUpType ? `Follow-Up - ${followUpType}` : undefined;
 
   return makeEmailDraft(bullets, {

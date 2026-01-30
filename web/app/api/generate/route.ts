@@ -19,12 +19,12 @@ export async function POST(req: Request) {
     const postMeetingNotes = String(body?.postMeetingNotes ?? "");
     const mode = (body?.mode ?? "past") as Mode;
 
-    // Basic guard (optional but helpful)
     if (mode !== "current" && mode !== "past") {
-      return NextResponse.json(
-        { ok: false, error: "Invalid mode" },
-        { status: 400 }
-      );
+      return NextResponse.json({ ok: false, error: "Invalid mode" }, { status: 400 });
+    }
+
+    if (!rawNotes.trim() && !postMeetingNotes.trim()) {
+      return NextResponse.json({ ok: false, error: "Missing rawNotes" }, { status: 400 });
     }
 
     const merged = postMeetingNotes.trim()
@@ -47,9 +47,6 @@ export async function POST(req: Request) {
     });
   } catch (err) {
     console.error("Generate API error:", err);
-    return NextResponse.json(
-      { ok: false, error: "Failed to generate outputs" },
-      { status: 400 }
-    );
+    return NextResponse.json({ ok: false, error: "Failed to generate outputs" }, { status: 500 });
   }
 }
