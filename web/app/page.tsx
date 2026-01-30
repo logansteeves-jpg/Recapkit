@@ -1,9 +1,6 @@
-// PART 1/4 - paste this first (top of file)
-
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { makeFollowUpEmailDraftFromHighlights } from "../lib/recap";
 import {
   createFolder,
   createSession,
@@ -101,6 +98,13 @@ function splitActionItemsToRows(actionItemsText: string): string[] {
     .filter(Boolean);
 }
 
+function splitSummaryToRows(summaryText: string): string[] {
+  const lines = (summaryText || "").split("\n").map((l) => l.trim());
+  return lines
+    .map((l) => l.replace(/^[-•]\s+/, "").trim())
+    .filter(Boolean);
+}
+
 function generateId() {
   return Math.random().toString(36).slice(2, 10);
 }
@@ -115,7 +119,14 @@ type FollowUpType =
   | "Video Call"
   | "Text Message"
   | "Other";
-type MeetingResult = "Completed" | "No Show" | "Rescheduled" | "Cancelled" | "Pending";
+
+type MeetingResult =
+  | "Completed"
+  | "No Show"
+  | "Rescheduled"
+  | "Cancelled"
+  | "Blocked"
+  | "Pending";
 
 type FollowUpHighlight = {
   id: string;
@@ -148,46 +159,6 @@ function followUpDisplayTitle(fu: FollowUpData) {
   return base.length ? base : "Follow-Up";
 }
 
-function buildFollowUpPrepTemplate(args: {
-  pastTitle: string;
-  followUpTitle: string;
-  focusPrompt: string;
-  highlights: FollowUpHighlight[];
-}) {
-  const { pastTitle, followUpTitle, focusPrompt, highlights } = args;
-
-  const lines: string[] = [];
-  lines.push(`Follow-Up Prep`);
-  lines.push("");
-  lines.push(`Source Meeting: ${pastTitle || "Past Meeting"}`);
-  lines.push(`Follow-Up: ${followUpTitle || "Follow-Up"}`);
-  if (focusPrompt.trim()) lines.push(`Focus: ${focusPrompt.trim()}`);
-  lines.push("");
-  lines.push(`Agenda / Talking Points`);
-  lines.push(`-`);
-  lines.push("");
-  lines.push(`Questions To Ask`);
-  lines.push(`-`);
-  lines.push("");
-  lines.push(`Updates Needed Before The Call`);
-  lines.push(`-`);
-  lines.push("");
-  lines.push(`Items We Are Following Up On`);
-  if (highlights.length) {
-    for (const h of highlights) {
-      const tag = (h.tag ?? "Other").trim();
-      const prefix = tag && tag !== "None" ? `[${tag}] ` : "";
-      lines.push(`- ${prefix}${h.text}`.trim());
-    }
-  } else {
-    lines.push(`- (No highlights selected yet)`);
-  }
-  lines.push("");
-  lines.push(`Proposed Next Steps`);
-  lines.push(`-`);
-
-  return lines.join("\n");
-}
 export default function Page() {
   const [screen, setScreen] = useState<Screen>({ name: "home" });
 
@@ -197,7 +168,7 @@ export default function Page() {
 
   const [newFolderName, setNewFolderName] = useState("");
 
-  // email controls
+  // Email controls (Follow-Up only)
   const [emailType, setEmailType] = useState<EmailType>("followUp");
   const [emailTone, setEmailTone] = useState<EmailTone>("professional");
 
@@ -207,9 +178,8 @@ export default function Page() {
   const [pastEditDraft, setPastEditDraft] = useState("");
   const [pastEditOriginal, setPastEditOriginal] = useState("");
 
-  // Follow-up UI state: which follow-up we are editing
+  // Follow-up UI state
   const [activeFollowUpId, setActiveFollowUpId] = useState<string | null>(null);
-  const [newHighlightText, setNewHighlightText] = useState("");
 
   useEffect(() => {
     setFolders(loadFolders());
@@ -261,14 +231,12 @@ export default function Page() {
 
   function openSession(sessionId: string) {
     resetPastEditUi();
-    setNewHighlightText("");
     setActiveFollowUpId(null);
     setScreen({ name: "session", sessionId });
   }
 
   function goHome() {
     resetPastEditUi();
-    setNewHighlightText("");
     setActiveFollowUpId(null);
     setScreen({ name: "home" });
   }
@@ -295,11 +263,15 @@ export default function Page() {
   }
 
   function getCheckpoints(s: Session): SessionCheckpoint[] {
-    return Array.isArray((s as any).checkpoints) ? ((s as any).checkpoints as SessionCheckpoint[]) : [];
+    return Array.isArray((s as any).checkpoints)
+      ? ((s as any).checkpoints as SessionCheckpoint[])
+      : [];
   }
 
   function getRedoStack(s: Session): SessionCheckpoint[] {
-    return Array.isArray((s as any).redoStack) ? ((s as any).redoStack as SessionCheckpoint[]) : [];
+    return Array.isArray((s as any).redoStack)
+      ? ((s as any).redoStack as SessionCheckpoint[])
+      : [];
   }
 
   function makeCheckpoint(reason: CheckpointReason, s: Session): SessionCheckpoint {
@@ -320,7 +292,9 @@ export default function Page() {
     if (last && checkpointCoreEqual(last, checkpoint)) return existing;
 
     const next = [...existing, checkpoint];
-    return next.length > MAX_CHECKPOINTS ? next.slice(next.length - MAX_CHECKPOINTS) : next;
+    return next.length > MAX_CHECKPOINTS
+      ? next.slice(next.length - MAX_CHECKPOINTS)
+      : next;
   }
 
   function doDestructive(
@@ -343,7 +317,10 @@ export default function Page() {
     setSessions((prev) => updateSession(prev, updated as Session));
   }
 
-  function patchSession(patch: Partial<Session> & Record<string, any>, opts?: { clearRedo?: boolean }) {
+  function patchSession(
+    patch: Partial<Session> & Record<string, any>,
+    opts?: { clearRedo?: boolean }
+  ) {
     if (!currentSession) return;
 
     const clearRedo = opts?.clearRedo ?? false;
@@ -360,72 +337,67 @@ export default function Page() {
   }
 
   async function generateViaApi(params: {
-  rawNotes: string;
-  postMeetingNotes: string;
-  mode: GenerateMode;
-  emailType: EmailType;
-  emailTone: EmailTone;
-}): Promise<Session["outputs"] | null> {
-  try {
-    const res = await fetch("/api/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(params),
-    });
+    rawNotes: string;
+    postMeetingNotes: string;
+    mode: GenerateMode;
+  }): Promise<Session["outputs"] | null> {
+    try {
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      });
 
-    const data = await res.json();
+      const data = await res.json();
 
-    if (!data?.ok || !data?.outputs) {
-      console.error("Generate failed:", data);
+      if (!data?.ok || !data?.outputs) {
+        console.error("Generate failed:", data);
+        return null;
+      }
+
+      return {
+        summary: String(data.outputs.summary ?? ""),
+        actionItems: String(data.outputs.actionItems ?? ""),
+        // Email is generated only in Follow-Up mode
+        email: "",
+      };
+    } catch (err) {
+      console.error("Generate error:", err);
       return null;
     }
-
-    return {
-      summary: String(data.outputs.summary ?? ""),
-      actionItems: String(data.outputs.actionItems ?? ""),
-      // /api/generate no longer returns email. keep stable shape for outputs.
-      email: String(data.outputs.email ?? ""),
-    };
-  } catch (err) {
-    console.error("Generate error:", err);
-    return null;
   }
-}
 
-/**
- * Follow-Up email generation endpoint (separate from /api/generate)
- * If you haven't created this route yet, keep this but it will 404 until it exists.
- */
-async function generateFollowUpEmailViaApi(params: {
-  highlights: { text: string; tag?: string }[];
-  followUpType: string;
-  focusPrompt: string;
-  emailPrompt: string;
-  meetingResult: string;
-  meetingOutcome: string;
-  emailType: EmailType;
-  emailTone: EmailTone;
-}): Promise<string | null> {
-  try {
-    const res = await fetch("/api/generate/follow-up", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(params),
-    });
+  async function generateFollowUpEmailViaApi(params: {
+    highlights: { text: string; tag?: string }[];
+    followUpType: string;
+    focusPrompt: string;
+    emailPrompt: string;
+    meetingResult: string;
+    meetingOutcome: string;
+    emailType: EmailType;
+    emailTone: EmailTone;
+  }): Promise<string | null> {
+    try {
+      const res = await fetch("/api/generate/follow-up", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      });
 
-    const data = await res.json();
+      const data = await res.json();
 
-    if (!data?.ok) {
-      console.error("Follow-up generate failed:", data);
+      if (!data?.ok) {
+        console.error("Follow-up generate failed:", data);
+        return null;
+      }
+
+      return String(data?.email ?? data?.outputs?.email ?? "");
+    } catch (err) {
+      console.error("Follow-up generate error:", err);
       return null;
     }
-
-    return String(data?.email ?? data?.outputs?.email ?? "");
-  } catch (err) {
-    console.error("Follow-up generate error:", err);
-    return null;
   }
-}
+
   // Avoid hijacking native textarea undo
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -434,7 +406,8 @@ async function generateFollowUpEmailViaApi(params: {
 
       const el = document.activeElement as HTMLElement | null;
       const tag = el?.tagName?.toLowerCase();
-      const isTypingField = tag === "textarea" || tag === "input" || (el as any)?.isContentEditable;
+      const isTypingField =
+        tag === "textarea" || tag === "input" || (el as any)?.isContentEditable;
       if (isTypingField) return;
 
       const isMac = navigator.platform.toLowerCase().includes("mac");
@@ -447,7 +420,10 @@ async function generateFollowUpEmailViaApi(params: {
         return;
       }
 
-      if ((e.key.toLowerCase() === "z" && e.shiftKey) || (!isMac && e.key.toLowerCase() === "y")) {
+      if (
+        (e.key.toLowerCase() === "z" && e.shiftKey) ||
+        (!isMac && e.key.toLowerCase() === "y")
+      ) {
         e.preventDefault();
         handleRedo();
       }
@@ -457,31 +433,27 @@ async function generateFollowUpEmailViaApi(params: {
     return () => window.removeEventListener("keydown", onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screen, currentSession, sessions]);
-  // PART 3/4 - paste immediately after PART 2
 
   async function handleGenerateNow() {
-  if (!currentSession) return;
+    if (!currentSession) return;
 
-  // Follow-Up mode does not use the main Generate pipeline.
-  // Use "Generate Email Draft" in the Follow-Up Planner instead.
-  if (currentSession.mode === "followUp") return;
+    // Follow-Up mode does not use the main Generate pipeline.
+    if (currentSession.mode === "followUp") return;
 
-  const rawNotesForGen =
-    currentSession.mode === "past" && isEditingPastRawNotes
-      ? pastEditDraft
-      : currentSession.rawNotes;
+    const rawNotesForGen =
+      currentSession.mode === "past" && isEditingPastRawNotes
+        ? pastEditDraft
+        : currentSession.rawNotes;
 
-  const outputs = await generateViaApi({
-    rawNotes: rawNotesForGen,
-    postMeetingNotes: String((currentSession as any).postMeetingNotes ?? ""),
-    emailType,
-    emailTone,
-    mode: (currentSession.mode === "current" ? "current" : "past") as GenerateMode,
-  });
+    const outputs = await generateViaApi({
+      rawNotes: rawNotesForGen,
+      postMeetingNotes: String((currentSession as any).postMeetingNotes ?? ""),
+      mode: (currentSession.mode === "current" ? "current" : "past") as GenerateMode,
+    });
 
-  if (!outputs) return;
-  doDestructive("generate", () => ({ outputs }));
-}
+    if (!outputs) return;
+    doDestructive("generate", () => ({ outputs }));
+  }
 
   async function handleEndMeeting() {
     if (!currentSession) return;
@@ -489,8 +461,6 @@ async function generateFollowUpEmailViaApi(params: {
     const outputs = await generateViaApi({
       rawNotes: currentSession.rawNotes,
       postMeetingNotes: String((currentSession as any).postMeetingNotes ?? ""),
-      emailType,
-      emailTone,
       mode: "past",
     });
 
@@ -499,7 +469,10 @@ async function generateFollowUpEmailViaApi(params: {
     doDestructive("end", () => ({
       mode: "past",
       outputs,
-      pastMeta: (currentSession as any).pastMeta ?? { meetingResult: "Pending", meetingOutcome: "" },
+      pastMeta: (currentSession as any).pastMeta ?? {
+        meetingResult: "Pending",
+        meetingOutcome: "",
+      },
     }));
 
     resetPastEditUi();
@@ -590,8 +563,6 @@ async function generateFollowUpEmailViaApi(params: {
     const outputs = await generateViaApi({
       rawNotes: pastEditDraft,
       postMeetingNotes: String((currentSession as any).postMeetingNotes ?? ""),
-      emailType,
-      emailTone,
       mode: "past",
     });
 
@@ -607,7 +578,9 @@ async function generateFollowUpEmailViaApi(params: {
 
   /* -------------------- pastMeta (meeting outcome lives here) -------------------- */
 
-  function getPastMeta(s: Session): { meetingResult: MeetingResult; meetingOutcome: string } {
+  function getPastMeta(
+    s: Session
+  ): { meetingResult: MeetingResult; meetingOutcome: string } {
     const pm = (s as any).pastMeta;
     return {
       meetingResult: (pm?.meetingResult ?? "Pending") as MeetingResult,
@@ -615,7 +588,9 @@ async function generateFollowUpEmailViaApi(params: {
     };
   }
 
-  function patchPastMeta(patch: Partial<{ meetingResult: MeetingResult; meetingOutcome: string }>) {
+  function patchPastMeta(
+    patch: Partial<{ meetingResult: MeetingResult; meetingOutcome: string }>
+  ) {
     if (!currentSession) return;
     const pm = getPastMeta(currentSession);
     patchSession({ pastMeta: { ...pm, ...patch } } as any, { clearRedo: true });
@@ -634,7 +609,9 @@ async function generateFollowUpEmailViaApi(params: {
         ...(single as any),
         id: (single as any).id ?? generateId(),
         title: (single as any).title ?? "Follow-Up",
-        highlights: Array.isArray((single as any).highlights) ? (single as any).highlights : [],
+        highlights: Array.isArray((single as any).highlights)
+          ? (single as any).highlights
+          : [],
       };
       return [fu];
     }
@@ -680,7 +657,8 @@ async function generateFollowUpEmailViaApi(params: {
 
   function createNewFollowUpAndOpen() {
     if (!currentSession) return;
-    if (currentSession.mode !== "past" && currentSession.mode !== "followUp") return;
+    if (currentSession.mode !== "past" && currentSession.mode !== "followUp")
+      return;
 
     const list = getFollowUps(currentSession);
     const fu = defaultFollowUp();
@@ -715,7 +693,8 @@ async function generateFollowUpEmailViaApi(params: {
 
   function enterFollowUpModeForId(followUpId: string) {
     if (!currentSession) return;
-    if (currentSession.mode !== "past" && currentSession.mode !== "followUp") return;
+    if (currentSession.mode !== "past" && currentSession.mode !== "followUp")
+      return;
 
     setActiveFollowUpId(followUpId);
     patchSession({ mode: "followUp" } as any, { clearRedo: true });
@@ -732,12 +711,20 @@ async function generateFollowUpEmailViaApi(params: {
     const cleaned = text.trim();
     if (!cleaned) return;
 
-    const next: FollowUpHighlight[] = [...fu.highlights, { id: generateId(), text: cleaned, tag }];
+    const exists = fu.highlights.some((h) => h.text.trim() === cleaned);
+    if (exists) return;
+
+    const next: FollowUpHighlight[] = [
+      ...fu.highlights,
+      { id: generateId(), text: cleaned, tag },
+    ];
     updateFollowUp(fu.id, { highlights: next });
   }
 
   function removeHighlightFromFollowUp(fu: FollowUpData, id: string) {
-    updateFollowUp(fu.id, { highlights: fu.highlights.filter((h) => h.id !== id) });
+    updateFollowUp(fu.id, {
+      highlights: fu.highlights.filter((h) => h.id !== id),
+    });
   }
 
   function updateHighlightTag(fu: FollowUpData, id: string, tag: HighlightTag) {
@@ -746,14 +733,14 @@ async function generateFollowUpEmailViaApi(params: {
     });
   }
 
-  function generateEmailDraftForActiveFollowUp() {
+  async function generateEmailDraftForActiveFollowUp() {
     if (!currentSession) return;
     if (currentSession.mode !== "followUp") return;
     if (!activeFollowUp) return;
 
     const pm = getPastMeta(currentSession);
 
-    const email = makeFollowUpEmailDraftFromHighlights({
+    const email = await generateFollowUpEmailViaApi({
       highlights: activeFollowUp.highlights.map((h) => ({ text: h.text, tag: h.tag })),
       followUpType: activeFollowUp.followUpType,
       focusPrompt: activeFollowUp.focusPrompt,
@@ -764,37 +751,9 @@ async function generateFollowUpEmailViaApi(params: {
       emailTone,
     });
 
+    if (!email) return;
+
     patchSession({ outputs: { ...currentSession.outputs, email } }, { clearRedo: true });
-  }
-
-  function scheduleMeetingForActiveFollowUp() {
-    if (!currentSession) return;
-    if (currentSession.mode !== "followUp") return;
-    if (!activeFollowUp) return;
-
-    const pastTitle = currentSession.title ?? "Past Meeting";
-    const prep = buildFollowUpPrepTemplate({
-      pastTitle,
-      followUpTitle: followUpDisplayTitle(activeFollowUp),
-      focusPrompt: activeFollowUp.focusPrompt,
-      highlights: activeFollowUp.highlights,
-    });
-
-    const s = createSession();
-    const newCurrent: Session = {
-      ...s,
-      folderId: currentSession.folderId ?? null,
-      mode: "current" as any,
-      title: `Follow-Up Meeting - ${followUpDisplayTitle(activeFollowUp)}`,
-      objective: `Follow-Up From: ${pastTitle}`,
-      rawNotes: prep,
-      outputs: { actionItems: "", summary: "", email: "" },
-      updatedAt: Date.now(),
-      createdAt: Date.now(),
-    };
-
-    setSessions((prev) => [newCurrent, ...prev]);
-    openSession(newCurrent.id);
   }
 
   /* -------------------- derived UI state -------------------- */
@@ -804,10 +763,15 @@ async function generateFollowUpEmailViaApi(params: {
 
   const headerSubtitle = "Turning Your Meetings Into Actionable And Accountable Follow-Ups";
 
-  const followUpActionRows = useMemo(() => {
+  const summaryRows = useMemo(() => {
+    if (!currentSession) return [];
+    return splitSummaryToRows(currentSession.outputs.summary || "");
+  }, [currentSession?.id, currentSession?.updatedAt]);
+
+  const actionRows = useMemo(() => {
     if (!currentSession) return [];
     return splitActionItemsToRows(currentSession.outputs.actionItems || "");
-  }, [currentSession]);
+  }, [currentSession?.id, currentSession?.updatedAt]);
 
   /* -------------------- render -------------------- */
 
@@ -1004,7 +968,7 @@ async function generateFollowUpEmailViaApi(params: {
           </div>
         </section>
       ) : null}
-      
+
       {/* SESSION */}
       {screen.name === "session" ? (
         <section>
@@ -1235,325 +1199,390 @@ async function generateFollowUpEmailViaApi(params: {
                 </div>
 
                 <div className="recap-home-grid" style={{ marginTop: 16 }}>
-                  {/* Notes */}
+                  {/* LEFT PANEL */}
                   <div style={{ border: "1px solid #eee", borderRadius: 14, padding: 14 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-                      <div style={{ fontWeight: 900 }}>Raw Notes</div>
-
-                      {currentSession.mode === "past" && !isEditingPastRawNotes ? (
-                        <button
-                          onClick={requestEnablePastEdit}
-                          style={{
-                            padding: "8px 10px",
-                            borderRadius: 10,
-                            border: "1px solid #ddd",
-                            background: "#fff",
-                            cursor: "pointer",
-                            fontWeight: 800,
-                            fontSize: 13,
-                          }}
-                        >
-                          Edit Raw Notes
-                        </button>
-                      ) : null}
-                    </div>
-
-                    {currentSession.mode === "past" && isEditingPastRawNotes ? (
-                      <div
-                        style={{
-                          marginTop: 10,
-                          padding: 10,
-                          borderRadius: 12,
-                          border: "1px solid #f1d08a",
-                          background: "#fff8e6",
-                          color: "#6a4b00",
-                          fontSize: 13,
-                          lineHeight: 1.35,
-                        }}
-                      >
-                        <b>Editing Past Raw Notes</b> - You are changing the historical record. Outputs regenerate when you
-                        save.
-                      </div>
-                    ) : null}
-
-                    <textarea
-                      value={
-                        currentSession.mode === "past" && isEditingPastRawNotes ? pastEditDraft : currentSession.rawNotes
-                      }
-                      readOnly={currentSession.mode === "past" && !isEditingPastRawNotes}
-                      onChange={(e) => {
-                        if (currentSession.mode === "past") {
-                          if (!isEditingPastRawNotes) return;
-                          setPastEditDraft(e.target.value);
-                          return;
-                        }
-                        patchSession({ rawNotes: e.target.value }, { clearRedo: true });
-                      }}
-                      placeholder={"Paste your meeting notes here..."}
-                      style={{
-                        width: "100%",
-                        minHeight: 260,
-                        borderRadius: 12,
-                        border: "1px solid #ddd",
-                        padding: 12,
-                        fontSize: 14,
-                        lineHeight: 1.4,
-                        resize: "vertical",
-                        background: currentSession.mode === "past" && !isEditingPastRawNotes ? "#fafafa" : "#fff",
-                        marginTop: 10,
-                      }}
-                    />
-
-                    {currentSession.mode === "past" && isEditingPastRawNotes ? (
-                      <div style={{ display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
-                        <button
-                          onClick={savePastEdit}
-                          style={{
-                            padding: "10px 14px",
-                            borderRadius: 12,
-                            border: "1px solid #111",
-                            background: "#111",
-                            color: "#fff",
-                            cursor: "pointer",
-                            fontWeight: 900,
-                          }}
-                        >
-                          Save Changes
-                        </button>
-
-                        <button
-                          onClick={() => {
-                            setPastEditDraft(pastEditOriginal);
-                            cancelPastEdit();
-                          }}
-                          style={{
-                            padding: "10px 14px",
-                            borderRadius: 12,
-                            border: "1px solid #ddd",
-                            background: "#fff",
-                            cursor: "pointer",
-                            fontWeight: 800,
-                          }}
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    ) : null}
-
-                    <div style={{ display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
-                      <button
-                        onClick={handleGenerateNow}
-                        disabled={
-                          currentSession.mode === "past" && isEditingPastRawNotes
-                            ? !pastEditDraft.trim()
-                            : !currentSession.rawNotes.trim()
-                        }
-                        style={{
-                          padding: "10px 14px",
-                          borderRadius: 12,
-                          border: "1px solid #111",
-                          background:
-                            (currentSession.mode === "past" && isEditingPastRawNotes
-                              ? pastEditDraft.trim()
-                              : currentSession.rawNotes.trim())
-                              ? "#111"
-                              : "#eee",
-                          color:
-                            (currentSession.mode === "past" && isEditingPastRawNotes
-                              ? pastEditDraft.trim()
-                              : currentSession.rawNotes.trim())
-                              ? "#fff"
-                              : "#777",
-                          cursor:
-                            (currentSession.mode === "past" && isEditingPastRawNotes
-                              ? pastEditDraft.trim()
-                              : currentSession.rawNotes.trim())
-                              ? "pointer"
-                              : "not-allowed",
-                          fontWeight: 900,
-                        }}
-                      >
-                        Generate
-                      </button>
-
-                      <button
-                        onClick={handleUndo}
-                        disabled={checkpointsCount === 0}
-                        style={{
-                          padding: "10px 14px",
-                          borderRadius: 12,
-                          border: "1px solid #ddd",
-                          background: checkpointsCount > 0 ? "#fff" : "#eee",
-                          color: checkpointsCount > 0 ? "#111" : "#777",
-                          cursor: checkpointsCount > 0 ? "pointer" : "not-allowed",
-                          fontWeight: 800,
-                        }}
-                        title="Undo last checkpoint"
-                      >
-                        Undo
-                      </button>
-
-                      <button
-                        onClick={handleRedo}
-                        disabled={redoCount === 0}
-                        style={{
-                          padding: "10px 14px",
-                          borderRadius: 12,
-                          border: "1px solid #ddd",
-                          background: redoCount > 0 ? "#fff" : "#eee",
-                          color: redoCount > 0 ? "#111" : "#777",
-                          cursor: redoCount > 0 ? "pointer" : "not-allowed",
-                          fontWeight: 800,
-                        }}
-                        title="Redo"
-                      >
-                        Redo
-                      </button>
-
-                      <button
-                        onClick={handleClear}
-                        style={{
-                          padding: "10px 14px",
-                          borderRadius: 12,
-                          border: "1px solid #ddd",
-                          background: "#fff",
-                          cursor: "pointer",
-                          fontWeight: 800,
-                        }}
-                      >
-                        Clear
-                      </button>
-                    </div>
-
-                    <div style={{ marginTop: 8, color: "#777", fontSize: 12 }}>
-                      {currentSession.mode === "current" ? (
-                        <>
-                          Status: <b>Meeting Still Open</b>. Notes auto-save until you press <b>End Meeting</b>.
-                        </>
-                      ) : currentSession.mode === "past" ? (
-                        <>
-                          Status: <b>Past Meeting</b>. Read-only by default to preserve history.
-                        </>
-                      ) : (
-                        <>
-                          Status: <b>Follow-Up Planner</b>. Select a follow-up, add highlights, then generate the draft
-                          email.
-                        </>
-                      )}
-                    </div>
-
-                    {/* Past-only: Post-meeting notes + meeting outcome */}
-                    {currentSession.mode === "past" ? (
-                      <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 12 }}>
-                        <div style={{ fontWeight: 900, marginBottom: 8 }}>Post-Meeting Notes</div>
-
-                        <textarea
-                          value={String((currentSession as any).postMeetingNotes ?? "")}
-                          onChange={(e) =>
-                            patchSession({ postMeetingNotes: e.target.value } as any, { clearRedo: true })
-                          }
-                          placeholder="Anything you remembered after the meeting (clarifications, context, etc.)"
-                          style={{
-                            width: "100%",
-                            minHeight: 120,
-                            borderRadius: 12,
-                            border: "1px solid #ddd",
-                            padding: 12,
-                            fontSize: 14,
-                            lineHeight: 1.4,
-                            resize: "vertical",
-                            background: "#fff",
-                          }}
-                        />
+                    {/* Follow-Up mode: Past snapshot + selection */}
+                    {currentSession.mode === "followUp" ? (
+                      <div>
+                        <div style={{ fontWeight: 900 }}>Past Meeting Snapshot</div>
+                        <div style={{ marginTop: 6, color: "#777", fontSize: 12 }}>
+                          Select items below to include in this follow-up. Highlights are saved exactly as selected.
+                        </div>
 
                         <div style={{ height: 12 }} />
 
-                        <div style={{ fontWeight: 900, marginBottom: 8 }}>Meeting Outcome</div>
+                        <div style={{ borderTop: "1px solid #eee", paddingTop: 12 }}>
+                          <div style={{ fontWeight: 900, marginBottom: 8 }}>Summary</div>
 
-                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                            <span style={{ color: "#666", fontSize: 13 }}>Result</span>
-                            <select
-                              value={getPastMeta(currentSession).meetingResult}
-                              onChange={(e) => patchPastMeta({ meetingResult: e.target.value as MeetingResult })}
-                              style={{
-                                padding: "10px 12px",
-                                borderRadius: 10,
-                                border: "1px solid #ddd",
-                                background: "#fff",
-                              }}
-                            >
-                              <option value="Pending">Pending</option>
-                              <option value="Completed">Completed</option>
-                              <option value="No Show">No Show</option>
-                              <option value="Rescheduled">Rescheduled</option>
-                              <option value="Cancelled">Cancelled</option>
-                            </select>
-                          </div>
+                          {summaryRows.length ? (
+                            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                              {summaryRows.slice(0, 20).map((row, idx) => (
+                                <button
+                                  key={`${idx}-${row}`}
+                                  onClick={() => {
+                                    if (!activeFollowUp) return;
+                                    addHighlightToFollowUp(activeFollowUp, row, "None");
+                                  }}
+                                  disabled={!activeFollowUp}
+                                  style={{
+                                    textAlign: "left",
+                                    padding: "10px 12px",
+                                    borderRadius: 12,
+                                    border: "1px solid #eee",
+                                    background: "#fff",
+                                    cursor: activeFollowUp ? "pointer" : "not-allowed",
+                                    fontSize: 13,
+                                  }}
+                                  title="Add as highlight"
+                                >
+                                  + {row}
+                                </button>
+                              ))}
+                            </div>
+                          ) : (
+                            <div style={{ color: "#777", fontSize: 13 }}>
+                              No summary yet. Return to Past Meeting and generate outputs first.
+                            </div>
+                          )}
                         </div>
 
-                        <div style={{ marginTop: 10 }}>
-                          <textarea
-                            value={getPastMeta(currentSession).meetingOutcome}
-                            onChange={(e) => patchPastMeta({ meetingOutcome: e.target.value })}
-                            placeholder="Outcome notes (what changed, decisions made, blockers, etc.)"
-                            style={{
-                              width: "100%",
-                              minHeight: 90,
-                              borderRadius: 12,
-                              border: "1px solid #ddd",
-                              padding: 12,
-                              fontSize: 14,
-                              lineHeight: 1.4,
-                              resize: "vertical",
-                              background: "#fff",
-                            }}
-                          />
+                        <div style={{ height: 14 }} />
+
+                        <div style={{ borderTop: "1px solid #eee", paddingTop: 12 }}>
+                          <div style={{ fontWeight: 900, marginBottom: 8 }}>Action Items</div>
+
+                          {actionRows.length ? (
+                            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                              {actionRows.slice(0, 30).map((row, idx) => (
+                                <button
+                                  key={`${idx}-${row}`}
+                                  onClick={() => {
+                                    if (!activeFollowUp) return;
+                                    addHighlightToFollowUp(activeFollowUp, row, "None");
+                                  }}
+                                  disabled={!activeFollowUp}
+                                  style={{
+                                    textAlign: "left",
+                                    padding: "10px 12px",
+                                    borderRadius: 12,
+                                    border: "1px solid #eee",
+                                    background: "#fff",
+                                    cursor: activeFollowUp ? "pointer" : "not-allowed",
+                                    fontSize: 13,
+                                  }}
+                                  title="Add as highlight"
+                                >
+                                  + {row}
+                                </button>
+                              ))}
+                            </div>
+                          ) : (
+                            <div style={{ color: "#777", fontSize: 13 }}>
+                              No action items yet. Return to Past Meeting and generate outputs first.
+                            </div>
+                          )}
                         </div>
                       </div>
-                    ) : null}
-
-                    {/* Follow-Up Planner (controls only - email output shows in Outputs panel) */}
-                    {currentSession.mode === "followUp" ? (
-                      <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 12 }}>
+                    ) : (
+                      /* Current/Past mode: Raw notes + controls */
+                      <div>
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-                          <div style={{ fontWeight: 900 }}>Follow-Up Planner</div>
+                          <div style={{ fontWeight: 900 }}>Raw Notes</div>
 
-                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                          {currentSession.mode === "past" && !isEditingPastRawNotes ? (
                             <button
-                              onClick={createNewFollowUpAndOpen}
+                              onClick={requestEnablePastEdit}
                               style={{
                                 padding: "8px 10px",
                                 borderRadius: 10,
                                 border: "1px solid #ddd",
                                 background: "#fff",
                                 cursor: "pointer",
-                                fontWeight: 900,
+                                fontWeight: 800,
                                 fontSize: 13,
                               }}
-                              title="Create a new follow-up for this past meeting"
                             >
-                              + New Follow-Up
+                              Edit Raw Notes
+                            </button>
+                          ) : null}
+                        </div>
+
+                        {currentSession.mode === "past" && isEditingPastRawNotes ? (
+                          <div
+                            style={{
+                              marginTop: 10,
+                              padding: 10,
+                              borderRadius: 12,
+                              border: "1px solid #f1d08a",
+                              background: "#fff8e6",
+                              color: "#6a4b00",
+                              fontSize: 13,
+                              lineHeight: 1.35,
+                            }}
+                          >
+                            <b>Editing Past Raw Notes</b> - You are changing the historical record. Outputs regenerate when
+                            you save.
+                          </div>
+                        ) : null}
+
+                        <textarea
+                          value={
+                            currentSession.mode === "past" && isEditingPastRawNotes
+                              ? pastEditDraft
+                              : currentSession.rawNotes
+                          }
+                          readOnly={currentSession.mode === "past" && !isEditingPastRawNotes}
+                          onChange={(e) => {
+                            if (currentSession.mode === "past") {
+                              if (!isEditingPastRawNotes) return;
+                              setPastEditDraft(e.target.value);
+                              return;
+                            }
+                            patchSession({ rawNotes: e.target.value }, { clearRedo: true });
+                          }}
+                          placeholder={"Paste your meeting notes here..."}
+                          style={{
+                            width: "100%",
+                            minHeight: 260,
+                            borderRadius: 12,
+                            border: "1px solid #ddd",
+                            padding: 12,
+                            fontSize: 14,
+                            lineHeight: 1.4,
+                            resize: "vertical",
+                            background: currentSession.mode === "past" && !isEditingPastRawNotes ? "#fafafa" : "#fff",
+                            marginTop: 10,
+                          }}
+                        />
+
+                        {currentSession.mode === "past" && isEditingPastRawNotes ? (
+                          <div style={{ display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
+                            <button
+                              onClick={savePastEdit}
+                              style={{
+                                padding: "10px 14px",
+                                borderRadius: 12,
+                                border: "1px solid #111",
+                                background: "#111",
+                                color: "#fff",
+                                cursor: "pointer",
+                                fontWeight: 900,
+                              }}
+                            >
+                              Save Changes
                             </button>
 
                             <button
-                              onClick={scheduleMeetingForActiveFollowUp}
-                              disabled={!activeFollowUp}
-                              style={{
-                                padding: "8px 10px",
-                                borderRadius: 10,
-                                border: "1px solid #111",
-                                background: activeFollowUp ? "#111" : "#eee",
-                                color: activeFollowUp ? "#fff" : "#777",
-                                cursor: activeFollowUp ? "pointer" : "not-allowed",
-                                fontWeight: 900,
-                                fontSize: 13,
+                              onClick={() => {
+                                setPastEditDraft(pastEditOriginal);
+                                cancelPastEdit();
                               }}
-                              title="Creates a new Current Meeting session in the same folder and seeds it with a prep template"
+                              style={{
+                                padding: "10px 14px",
+                                borderRadius: 12,
+                                border: "1px solid #ddd",
+                                background: "#fff",
+                                cursor: "pointer",
+                                fontWeight: 800,
+                              }}
                             >
-                              Schedule Meeting For This Follow-Up
+                              Cancel
                             </button>
                           </div>
+                        ) : null}
+
+                        <div style={{ display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
+                          <button
+                            onClick={handleGenerateNow}
+                            disabled={
+                              currentSession.mode === "past" && isEditingPastRawNotes
+                                ? !pastEditDraft.trim()
+                                : !currentSession.rawNotes.trim()
+                            }
+                            style={{
+                              padding: "10px 14px",
+                              borderRadius: 12,
+                              border: "1px solid #111",
+                              background:
+                                (currentSession.mode === "past" && isEditingPastRawNotes
+                                  ? pastEditDraft.trim()
+                                  : currentSession.rawNotes.trim())
+                                  ? "#111"
+                                  : "#eee",
+                              color:
+                                (currentSession.mode === "past" && isEditingPastRawNotes
+                                  ? pastEditDraft.trim()
+                                  : currentSession.rawNotes.trim())
+                                  ? "#fff"
+                                  : "#777",
+                              cursor:
+                                (currentSession.mode === "past" && isEditingPastRawNotes
+                                  ? pastEditDraft.trim()
+                                  : currentSession.rawNotes.trim())
+                                  ? "pointer"
+                                  : "not-allowed",
+                              fontWeight: 900,
+                            }}
+                          >
+                            Generate
+                          </button>
+
+                          <button
+                            onClick={handleUndo}
+                            disabled={checkpointsCount === 0}
+                            style={{
+                              padding: "10px 14px",
+                              borderRadius: 12,
+                              border: "1px solid #ddd",
+                              background: checkpointsCount > 0 ? "#fff" : "#eee",
+                              color: checkpointsCount > 0 ? "#111" : "#777",
+                              cursor: checkpointsCount > 0 ? "pointer" : "not-allowed",
+                              fontWeight: 800,
+                            }}
+                            title="Undo last checkpoint"
+                          >
+                            Undo
+                          </button>
+
+                          <button
+                            onClick={handleRedo}
+                            disabled={redoCount === 0}
+                            style={{
+                              padding: "10px 14px",
+                              borderRadius: 12,
+                              border: "1px solid #ddd",
+                              background: redoCount > 0 ? "#fff" : "#eee",
+                              color: redoCount > 0 ? "#111" : "#777",
+                              cursor: redoCount > 0 ? "pointer" : "not-allowed",
+                              fontWeight: 800,
+                            }}
+                            title="Redo"
+                          >
+                            Redo
+                          </button>
+
+                          <button
+                            onClick={handleClear}
+                            style={{
+                              padding: "10px 14px",
+                              borderRadius: 12,
+                              border: "1px solid #ddd",
+                              background: "#fff",
+                              cursor: "pointer",
+                              fontWeight: 800,
+                            }}
+                          >
+                            Clear
+                          </button>
+                        </div>
+
+                        <div style={{ marginTop: 8, color: "#777", fontSize: 12 }}>
+                          {currentSession.mode === "current" ? (
+                            <>
+                              Status: <b>Meeting Still Open</b>. Notes auto-save until you press <b>End Meeting</b>.
+                            </>
+                          ) : (
+                            <>
+                              Status: <b>Past Meeting</b>. Read-only by default to preserve history.
+                            </>
+                          )}
+                        </div>
+
+                        {/* Past-only: Post-meeting notes + meeting outcome */}
+                        {currentSession.mode === "past" ? (
+                          <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 12 }}>
+                            <div style={{ fontWeight: 900, marginBottom: 8 }}>Post-Meeting Notes</div>
+
+                            <textarea
+                              value={String((currentSession as any).postMeetingNotes ?? "")}
+                              onChange={(e) =>
+                                patchSession({ postMeetingNotes: e.target.value } as any, { clearRedo: true })
+                              }
+                              placeholder="Anything you remembered after the meeting (clarifications, context, etc.)"
+                              style={{
+                                width: "100%",
+                                minHeight: 120,
+                                borderRadius: 12,
+                                border: "1px solid #ddd",
+                                padding: 12,
+                                fontSize: 14,
+                                lineHeight: 1.4,
+                                resize: "vertical",
+                                background: "#fff",
+                              }}
+                            />
+
+                            <div style={{ height: 12 }} />
+
+                            <div style={{ fontWeight: 900, marginBottom: 8 }}>Meeting Outcome</div>
+
+                            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                                <span style={{ color: "#666", fontSize: 13 }}>Result</span>
+                                <select
+                                  value={getPastMeta(currentSession).meetingResult}
+                                  onChange={(e) => patchPastMeta({ meetingResult: e.target.value as MeetingResult })}
+                                  style={{
+                                    padding: "10px 12px",
+                                    borderRadius: 10,
+                                    border: "1px solid #ddd",
+                                    background: "#fff",
+                                  }}
+                                >
+                                  <option value="Pending">Pending</option>
+                                  <option value="Completed">Completed</option>
+                                  <option value="No Show">No Show</option>
+                                  <option value="Rescheduled">Rescheduled</option>
+                                  <option value="Blocked">Blocked</option>
+                                  <option value="Cancelled">Cancelled</option>
+                                </select>
+                              </div>
+                            </div>
+
+                            <div style={{ marginTop: 10 }}>
+                              <textarea
+                                value={getPastMeta(currentSession).meetingOutcome}
+                                onChange={(e) => patchPastMeta({ meetingOutcome: e.target.value })}
+                                placeholder="Outcome notes (what changed, decisions made, blockers, etc.)"
+                                style={{
+                                  width: "100%",
+                                  minHeight: 90,
+                                  borderRadius: 12,
+                                  border: "1px solid #ddd",
+                                  padding: 12,
+                                  fontSize: 14,
+                                  lineHeight: 1.4,
+                                  resize: "vertical",
+                                  background: "#fff",
+                                }}
+                              />
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    )}
+
+                    {/* Follow-Up Planner */}
+                    {currentSession.mode === "followUp" ? (
+                      <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 12 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                          <div style={{ fontWeight: 900 }}>Follow-Up Planner</div>
+
+                          <button
+                            onClick={createNewFollowUpAndOpen}
+                            style={{
+                              padding: "8px 10px",
+                              borderRadius: 10,
+                              border: "1px solid #ddd",
+                              background: "#fff",
+                              cursor: "pointer",
+                              fontWeight: 900,
+                              fontSize: 13,
+                            }}
+                            title="Create a new follow-up for this past meeting"
+                          >
+                            + New Follow-Up
+                          </button>
                         </div>
 
                         {followUps.length ? (
@@ -1654,9 +1683,7 @@ async function generateFollowUpEmailViaApi(params: {
                             </div>
 
                             <div style={{ marginTop: 12 }}>
-                              <div style={{ color: "#666", fontSize: 13, marginBottom: 6 }}>
-                                Focus Prompt (optional)
-                              </div>
+                              <div style={{ color: "#666", fontSize: 13, marginBottom: 6 }}>Focus Prompt (optional)</div>
                               <textarea
                                 value={activeFollowUp.focusPrompt}
                                 onChange={(e) => updateFollowUp(activeFollowUp.id, { focusPrompt: e.target.value })}
@@ -1699,45 +1726,18 @@ async function generateFollowUpEmailViaApi(params: {
 
                             {/* Highlights */}
                             <div style={{ marginTop: 14, borderTop: "1px solid #eee", paddingTop: 12 }}>
-                              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                              <div
+                                style={{
+                                  display: "flex",
+                                  justifyContent: "space-between",
+                                  gap: 10,
+                                  alignItems: "center",
+                                }}
+                              >
                                 <div style={{ fontWeight: 900 }}>Highlights</div>
                                 <div style={{ color: "#666", fontSize: 12 }}>
                                   Selected: <b>{activeFollowUp.highlights?.length ?? 0}</b>
                                 </div>
-                              </div>
-
-                              <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                                <input
-                                  value={newHighlightText}
-                                  onChange={(e) => setNewHighlightText(e.target.value)}
-                                  placeholder="Add a highlight to follow up on..."
-                                  style={{
-                                    flex: 1,
-                                    minWidth: 220,
-                                    padding: "10px 12px",
-                                    borderRadius: 10,
-                                    border: "1px solid #ddd",
-                                  }}
-                                />
-
-                                <button
-                                  onClick={() => {
-                                    addHighlightToFollowUp(activeFollowUp, newHighlightText, "None");
-                                    setNewHighlightText("");
-                                  }}
-                                  disabled={!newHighlightText.trim()}
-                                  style={{
-                                    padding: "10px 12px",
-                                    borderRadius: 10,
-                                    border: "1px solid #111",
-                                    background: newHighlightText.trim() ? "#111" : "#eee",
-                                    color: newHighlightText.trim() ? "#fff" : "#777",
-                                    cursor: newHighlightText.trim() ? "pointer" : "not-allowed",
-                                    fontWeight: 900,
-                                  }}
-                                >
-                                  Add
-                                </button>
                               </div>
 
                               {activeFollowUp.highlights && activeFollowUp.highlights.length ? (
@@ -1811,12 +1811,12 @@ async function generateFollowUpEmailViaApi(params: {
                                 </div>
                               ) : (
                                 <div style={{ marginTop: 10, color: "#777", fontSize: 13 }}>
-                                  No highlights yet. Add a few and then generate the email.
+                                  No highlights selected yet. Click items in the snapshot above to add them.
                                 </div>
                               )}
                             </div>
 
-                            {/* Email settings + generate (no textarea here) */}
+                            {/* Email settings + generate */}
                             <div style={{ marginTop: 14, borderTop: "1px solid #eee", paddingTop: 12 }}>
                               <div style={{ fontWeight: 900, marginBottom: 10 }}>Email Draft</div>
 
@@ -1862,14 +1862,19 @@ async function generateFollowUpEmailViaApi(params: {
 
                                 <button
                                   onClick={generateEmailDraftForActiveFollowUp}
-                                  disabled={!activeFollowUp}
+                                  disabled={!activeFollowUp || (activeFollowUp.highlights?.length ?? 0) === 0}
                                   style={{
                                     padding: "10px 14px",
                                     borderRadius: 12,
                                     border: "1px solid #111",
-                                    background: activeFollowUp ? "#111" : "#eee",
-                                    color: activeFollowUp ? "#fff" : "#777",
-                                    cursor: activeFollowUp ? "pointer" : "not-allowed",
+                                    background:
+                                      activeFollowUp && (activeFollowUp.highlights?.length ?? 0) > 0 ? "#111" : "#eee",
+                                    color:
+                                      activeFollowUp && (activeFollowUp.highlights?.length ?? 0) > 0 ? "#fff" : "#777",
+                                    cursor:
+                                      activeFollowUp && (activeFollowUp.highlights?.length ?? 0) > 0
+                                        ? "pointer"
+                                        : "not-allowed",
                                     fontWeight: 900,
                                   }}
                                   title="Generates an email draft from the selected highlights + prompts"
@@ -1888,75 +1893,11 @@ async function generateFollowUpEmailViaApi(params: {
                     ) : null}
                   </div>
 
-                  {/* Outputs */}
+                  {/* RIGHT PANEL: Outputs */}
                   <div style={{ border: "1px solid #eee", borderRadius: 14, padding: 14 }}>
                     <div style={{ fontWeight: 900, marginBottom: 10 }}>Outputs</div>
 
-                    {/* Summary */}
-                    {currentSession.mode !== "followUp" ? (
-                      <div style={{ marginBottom: 12 }}>
-                        <div style={{ fontWeight: 900, marginBottom: 8 }}>Summary</div>
-                        <textarea
-                          value={currentSession.outputs.summary || ""}
-                          readOnly
-                          placeholder="Summary output..."
-                          style={{
-                            width: "100%",
-                            minHeight: 160,
-                            borderRadius: 12,
-                            border: "1px solid #ddd",
-                            padding: 12,
-                            fontSize: 14,
-                            lineHeight: 1.4,
-                            resize: "vertical",
-                            background: "#fafafa",
-                          }}
-                        />
-                      </div>
-                    ) : null}
-
-                    {/* Action Items */}
-                    {currentSession.mode !== "followUp" ? (
-                      <div style={{ marginBottom: 12 }}>
-                        <div style={{ fontWeight: 900, marginBottom: 8 }}>Action Items</div>
-                        <textarea
-                          value={currentSession.outputs.actionItems || ""}
-                          readOnly
-                          placeholder="Action items output..."
-                          style={{
-                            width: "100%",
-                            minHeight: 220,
-                            borderRadius: 12,
-                            border: "1px solid #ddd",
-                            padding: 12,
-                            fontSize: 14,
-                            lineHeight: 1.4,
-                            resize: "vertical",
-                            background: "#fafafa",
-                          }}
-                        />
-
-                        {followUpActionRows.length ? (
-                          <div style={{ marginTop: 10, borderTop: "1px solid #eee", paddingTop: 10 }}>
-                            <div style={{ color: "#666", fontSize: 13, marginBottom: 8 }}>Quick view (parsed)</div>
-                            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                              {followUpActionRows.slice(0, 10).map((row, idx) => (
-                                <div key={idx} style={{ fontSize: 13 }}>
-                                  - {row}
-                                </div>
-                              ))}
-                              {followUpActionRows.length > 10 ? (
-                                <div style={{ color: "#777", fontSize: 12 }}>
-                                  (+{followUpActionRows.length - 10} more)
-                                </div>
-                              ) : null}
-                            </div>
-                          </div>
-                        ) : null}
-                      </div>
-                    ) : null}
-
-                    {/* Email (followUp mode output) */}
+                    {/* Follow-Up mode: Email only */}
                     {currentSession.mode === "followUp" ? (
                       <div>
                         <div style={{ fontWeight: 900, marginBottom: 8 }}>Email Draft</div>
@@ -1966,7 +1907,7 @@ async function generateFollowUpEmailViaApi(params: {
                           placeholder="Generate an email draft in the Follow-Up Planner..."
                           style={{
                             width: "100%",
-                            minHeight: 260,
+                            minHeight: 520,
                             borderRadius: 12,
                             border: "1px solid #ddd",
                             padding: 12,
@@ -1977,7 +1918,50 @@ async function generateFollowUpEmailViaApi(params: {
                           }}
                         />
                       </div>
-                    ) : null}
+                    ) : (
+                      /* Current/Past: Summary + Action Items */
+                      <div>
+                        <div style={{ marginBottom: 12 }}>
+                          <div style={{ fontWeight: 900, marginBottom: 8 }}>Summary</div>
+                          <textarea
+                            value={currentSession.outputs.summary || ""}
+                            readOnly
+                            placeholder="Summary output..."
+                            style={{
+                              width: "100%",
+                              minHeight: 160,
+                              borderRadius: 12,
+                              border: "1px solid #ddd",
+                              padding: 12,
+                              fontSize: 14,
+                              lineHeight: 1.4,
+                              resize: "vertical",
+                              background: "#fafafa",
+                            }}
+                          />
+                        </div>
+
+                        <div style={{ marginBottom: 12 }}>
+                          <div style={{ fontWeight: 900, marginBottom: 8 }}>Action Items</div>
+                          <textarea
+                            value={currentSession.outputs.actionItems || ""}
+                            readOnly
+                            placeholder="Action items output..."
+                            style={{
+                              width: "100%",
+                              minHeight: 220,
+                              borderRadius: 12,
+                              border: "1px solid #ddd",
+                              padding: 12,
+                              fontSize: 14,
+                              lineHeight: 1.4,
+                              resize: "vertical",
+                              background: "#fafafa",
+                            }}
+                          />
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
 
