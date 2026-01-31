@@ -1816,77 +1816,84 @@ export default function Page() {
                               )}
                             </div>
 
-                            {/* Email settings + generate */}
-                            <div style={{ marginTop: 14, borderTop: "1px solid #eee", paddingTop: 12 }}>
-                              <div style={{ fontWeight: 900, marginBottom: 10 }}>Email Draft</div>
+                           {/* Email settings + generate */}
+                          <div style={{ marginTop: 14, borderTop: "1px solid #eee", paddingTop: 12 }}>
+                            <div style={{ fontWeight: 900, marginBottom: 10 }}>Email Draft</div>
 
-                              <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
-                                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                                  <span style={{ color: "#666", fontSize: 13 }}>Type</span>
-                                  <select
-                                    value={emailType}
-                                    onChange={(e) => setEmailType(e.target.value as EmailType)}
-                                    style={{
-                                      padding: "10px 12px",
-                                      borderRadius: 10,
-                                      border: "1px solid #ddd",
-                                      background: "#fff",
-                                    }}
-                                  >
-                                    <option value="followUp">Follow-Up</option>
-                                    <option value="question">Question</option>
-                                    <option value="actionComplete">Action Complete</option>
-                                    <option value="actionClarification">Clarification</option>
-                                    <option value="concern">Concern</option>
-                                  </select>
-                                </div>
-
-                                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                                  <span style={{ color: "#666", fontSize: 13 }}>Tone</span>
-                                  <select
-                                    value={emailTone}
-                                    onChange={(e) => setEmailTone(e.target.value as EmailTone)}
-                                    style={{
-                                      padding: "10px 12px",
-                                      borderRadius: 10,
-                                      border: "1px solid #ddd",
-                                      background: "#fff",
-                                    }}
-                                  >
-                                    <option value="professional">Professional</option>
-                                    <option value="warm">Warm</option>
-                                    <option value="friendlyProfessional">Friendly Professional</option>
-                                    <option value="casual">Casual</option>
-                                  </select>
-                                </div>
-
-                                <button
-                                  onClick={generateEmailDraftForActiveFollowUp}
-                                  disabled={!activeFollowUp || (activeFollowUp.highlights?.length ?? 0) === 0}
+                            <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+                              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                                <span style={{ color: "#666", fontSize: 13 }}>Type</span>
+                                <select
+                                  value={emailType}
+                                  onChange={(e) => setEmailType(e.target.value as EmailType)}
                                   style={{
-                                    padding: "10px 14px",
-                                    borderRadius: 12,
-                                    border: "1px solid #111",
-                                    background:
-                                      activeFollowUp && (activeFollowUp.highlights?.length ?? 0) > 0 ? "#111" : "#eee",
-                                    color:
-                                      activeFollowUp && (activeFollowUp.highlights?.length ?? 0) > 0 ? "#fff" : "#777",
-                                    cursor:
-                                      activeFollowUp && (activeFollowUp.highlights?.length ?? 0) > 0
-                                        ? "pointer"
-                                        : "not-allowed",
-                                    fontWeight: 900,
+                                    padding: "10px 12px",
+                                    borderRadius: 10,
+                                    border: "1px solid #ddd",
+                                    background: "#fff",
                                   }}
-                                  title="Generates an email draft from the selected highlights + prompts"
                                 >
-                                  Generate Email Draft
-                                </button>
+                                  <option value="followUp">Follow-Up</option>
+                                  <option value="question">Question</option>
+                                  <option value="actionComplete">Action Complete</option>
+                                  <option value="actionClarification">Clarification</option>
+                                  <option value="concern">Concern</option>
+                                </select>
                               </div>
 
-                              <div style={{ marginTop: 8, color: "#777", fontSize: 12 }}>
-                                The generated email appears in the Outputs panel on the right.
+                              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                                <span style={{ color: "#666", fontSize: 13 }}>Tone</span>
+                                <select
+                                  value={emailTone}
+                                  onChange={(e) => setEmailTone(e.target.value as EmailTone)}
+                                  style={{
+                                    padding: "10px 12px",
+                                    borderRadius: 10,
+                                    border: "1px solid #ddd",
+                                    background: "#fff",
+                                  }}
+                                >
+                                  <option value="professional">Professional</option>
+                                  <option value="warm">Warm</option>
+                                  <option value="friendlyProfessional">Friendly Professional</option>
+                                  <option value="casual">Casual</option>
+                                </select>
                               </div>
+
+                              <button
+                                onClick={generateEmailDraftForActiveFollowUp}
+                                disabled={!activeFollowUp || (activeFollowUp.highlights?.length ?? 0) === 0}
+                                style={{
+                                  padding: "10px 14px",
+                                  borderRadius: 12,
+                                  border: "1px solid #111",
+                                  background: activeFollowUp && (activeFollowUp.highlights?.length ?? 0) > 0 ? "#111" : "#eee",
+                                  color: activeFollowUp && (activeFollowUp.highlights?.length ?? 0) > 0 ? "#fff" : "#777",
+                                  cursor: activeFollowUp && (activeFollowUp.highlights?.length ?? 0) > 0 ? "pointer" : "not-allowed",
+                                  fontWeight: 900,
+                                }}
+                                title={
+                                  !activeFollowUp
+                                    ? "Select a follow-up first"
+                                    : (activeFollowUp.highlights?.length ?? 0) === 0
+                                      ? "Add at least 1 highlight to generate an email"
+                                      : "Generates an email draft from the selected highlights + prompts"
+                                }
+                              >
+                                Generate Follow-Up Email
+                              </button>
                             </div>
+
+                            <div style={{ marginTop: 8, color: "#777", fontSize: 12 }}>
+                              {activeFollowUp && (activeFollowUp.highlights?.length ?? 0) === 0 ? (
+                                <>
+                                  Add at least <b>1 highlight</b> above to enable email generation.
+                                </>
+                              ) : (
+                                <>The generated email appears in the Outputs panel on the right.</>
+                              )}
+                            </div>
+                          </div>
                           </div>
                         ) : null}
                       </div>
