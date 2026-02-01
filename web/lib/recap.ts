@@ -1,7 +1,9 @@
 // web/lib/recap.ts
 // Deterministic, local-only recap helpers (Phase 1).
 // Summary + Action Items are generated via /api/generate using these functions.
-// Follow-Up email drafts are generated via /api/generate/follow-up using makeFollowUpEmailDraftFromHighlights.
+// Follow-Up email drafts are generated via /api/follow-up using makeFollowUpEmailDraftFromHighlights.
+
+import type { EmailType, EmailTone } from "./types";
 
 export type ActionItem = {
   text: string; // the action itself (cleaned)
@@ -14,15 +16,6 @@ export type ActionIssue = {
   type: "missingOwner" | "missingDueDate" | "vague";
   message: string;
 };
-
-export type EmailType =
-  | "followUp"
-  | "question"
-  | "actionComplete"
-  | "actionClarification"
-  | "concern";
-
-export type EmailTone = "professional" | "warm" | "friendlyProfessional" | "casual";
 
 export type MakeEmailDraftOptions = {
   type?: EmailType;

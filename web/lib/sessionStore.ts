@@ -1,6 +1,6 @@
 // web/lib/sessionStore.ts
 
-export type SessionMode = "followUp" | "current" | "past";
+import type { FollowUpType, HighlightTag, MeetingResult, SessionMode } from "./types";
 
 export type Outputs = {
   actionItems: string;
@@ -17,29 +17,6 @@ export type SessionCheckpoint = {
   timestamp: number;
   reason: CheckpointReason;
 };
-
-export type FollowUpType =
-  | "Email"
-  | "Phone Call"
-  | "In-Person Meeting"
-  | "Video Call"
-  | "Text Message"
-  | "Other";
-
-export type MeetingResult =
-  | "Completed"
-  | "No Show"
-  | "Rescheduled"
-  | "Cancelled"
-  | "Pending";
-
-export type HighlightTag =
-  | "None"
-  | "Email"
-  | "Call"
-  | "Meeting"
-  | "Urgent"
-  | "Other";
 
 export type FollowUpHighlight = {
   id: string; // stable id for the highlight row

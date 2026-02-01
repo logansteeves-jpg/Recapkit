@@ -16,17 +16,10 @@ import {
   type SessionCheckpoint,
   type CheckpointReason,
 } from "../lib/sessionStore";
+import type { EmailTone, EmailType, FollowUpType, HighlightTag, MeetingResult } from "@/lib/types";
+
 
 type Screen = { name: "home" } | { name: "session"; sessionId: string };
-
-type EmailType =
-  | "followUp"
-  | "question"
-  | "actionComplete"
-  | "actionClarification"
-  | "concern";
-
-type EmailTone = "professional" | "warm" | "friendlyProfessional" | "casual";
 
 type GenerateMode = "current" | "past";
 
@@ -110,23 +103,6 @@ function generateId() {
 }
 
 /* -------------------- Follow-Up (duck-typed) -------------------- */
-
-type HighlightTag = "None" | "Email" | "Call" | "Meeting" | "Urgent" | "Other";
-type FollowUpType =
-  | "Email"
-  | "Phone Call"
-  | "In-Person Meeting"
-  | "Video Call"
-  | "Text Message"
-  | "Other";
-
-type MeetingResult =
-  | "Completed"
-  | "No Show"
-  | "Rescheduled"
-  | "Cancelled"
-  | "Blocked"
-  | "Pending";
 
 type FollowUpHighlight = {
   id: string;
@@ -368,15 +344,15 @@ export default function Page() {
   }
 
   async function generateFollowUpEmailViaApi(params: {
-    highlights: { text: string; tag?: string }[];
-    followUpType: string;
-    focusPrompt: string;
-    emailPrompt: string;
-    meetingResult: string;
-    meetingOutcome: string;
-    emailType: EmailType;
-    emailTone: EmailTone;
-  }): Promise<string | null> {
+  highlights: { text: string; tag?: string }[];
+  followUpType: string;
+  focusPrompt: string;
+  emailPrompt: string;
+  meetingResult: MeetingResult;
+  meetingOutcome: string;
+  emailType: EmailType;
+  emailTone: EmailTone;
+}): Promise<string | null> {
     try {
       const res = await fetch("/api/follow-up", {
         method: "POST",
