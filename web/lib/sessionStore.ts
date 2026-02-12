@@ -19,14 +19,16 @@ export type SessionCheckpoint = {
 };
 
 export type FollowUpHighlight = {
-  id: string; // stable id for the highlight row
-  text: string; // what was highlighted (usually an action item line)
-  tag: HighlightTag; // category tag (drives follow-up focus)
+  id: string;
+  text: string;
+  tag: HighlightTag;
 };
 
+export type FollowUpStatus = "open" | "closed";
+
 export type FollowUpData = {
-  id: string; // NEW: follow-ups are distinct objects now
-  title: string; // NEW: a label for the follow-up (ex: "Follow-Up: Pricing + Timeline")
+  id: string;
+  title: string;
   createdAt: number;
   updatedAt: number;
 
@@ -35,6 +37,14 @@ export type FollowUpData = {
   emailPrompt: string;
 
   highlights: FollowUpHighlight[];
+
+  // Phase 1: Persisted draft (belongs to the follow-up, not the session)
+  emailDraft?: string;
+
+  // Phase 1: Simple completion lifecycle
+  status?: FollowUpStatus;
+  closedAt?: number;
+  outcomeNotes?: string;
 };
 
 /**
@@ -43,11 +53,6 @@ export type FollowUpData = {
 export type PastMeta = {
   meetingResult: MeetingResult;
   meetingOutcome: string;
-
-  /**
-   * Optional: future expansion (ex: reschedule date, next meeting date, etc.)
-   * Keep strings for now so you can pipe into calendar integrations later.
-   */
   nextMeetingDate?: string;
 };
 
@@ -59,26 +64,15 @@ export type Session = {
   objective: string;
   rawNotes: string;
 
-  // Notes added after the meeting (used in Past mode)
   postMeetingNotes?: string;
 
-  // Derived artifacts only
   outputs: Outputs;
 
-  /**
-   * NEW: Past meeting metadata (result + outcome) stored on the past meeting session.
-   */
   pastMeta?: PastMeta;
 
-  /**
-   * NEW: multiple follow-ups per past meeting
-   */
   followUps?: FollowUpData[];
 
-  // Local session history checkpoints (Clear / Generate / End / etc.)
   checkpoints?: SessionCheckpoint[];
-
-  // For Undo/Redo support (Redo stack is separate from checkpoints)
   redoStack?: SessionCheckpoint[];
 
   createdAt: number;
@@ -149,11 +143,18 @@ function defaultFollowUpData(): FollowUpData {
     focusPrompt: "",
     emailPrompt: "",
     highlights: [],
+    emailDraft: "",
+    status: "open",
+    closedAt: undefined,
+    outcomeNotes: "",
   };
 }
 
 function normalizeFollowUpData(f: any): FollowUpData {
   const now = Date.now();
+  const statusRaw = String(f?.status ?? "open");
+  const status: FollowUpStatus = statusRaw === "closed" ? "closed" : "open";
+
   return {
     id: f?.id ?? generateId(),
     title: f?.title ?? "Untitled Follow-Up",
@@ -163,23 +164,25 @@ function normalizeFollowUpData(f: any): FollowUpData {
     focusPrompt: f?.focusPrompt ?? "",
     emailPrompt: f?.emailPrompt ?? "",
     highlights: normalizeHighlights(f?.highlights),
+
+    emailDraft: f?.emailDraft ?? "",
+
+    status,
+    closedAt: typeof f?.closedAt === "number" ? f.closedAt : undefined,
+    outcomeNotes: f?.outcomeNotes ?? "",
   };
 }
 
 /**
  * Back-compat: normalize legacy checkpoints (including legacy "pause") into the new shape.
- * - If old data contains reason:"pause", we remap it to "manual" so the app never breaks.
  */
 function normalizeCheckpoint(cp: any): SessionCheckpoint {
   const reasonRaw = String(cp?.reason ?? "manual");
 
   const reason: CheckpointReason =
-    reasonRaw === "clear" ||
-    reasonRaw === "generate" ||
-    reasonRaw === "end" ||
-    reasonRaw === "manual"
+    reasonRaw === "clear" || reasonRaw === "generate" || reasonRaw === "end" || reasonRaw === "manual"
       ? (reasonRaw as CheckpointReason)
-      : "manual"; // includes legacy "pause", unknown strings, etc.
+      : "manual";
 
   return {
     rawNotes: cp?.rawNotes ?? "",
@@ -192,7 +195,6 @@ function normalizeCheckpoint(cp: any): SessionCheckpoint {
 
 /**
  * Back-compat: normalize saved sessions from localStorage into the current shape.
- * This prevents crashes when you change types over time.
  */
 function normalizeSession(s: any): Session {
   const now = Date.now();
@@ -241,11 +243,7 @@ function normalizeSession(s: any): Session {
     postMeetingNotes: s?.postMeetingNotes ?? "",
     outputs: normalizeOutputs(s?.outputs ?? defaultOutputs()),
 
-    pastMeta: s?.pastMeta
-      ? normalizePastMeta(s.pastMeta)
-      : pastMetaFromLegacy
-        ? pastMetaFromLegacy
-        : undefined,
+    pastMeta: s?.pastMeta ? normalizePastMeta(s.pastMeta) : pastMetaFromLegacy ? pastMetaFromLegacy : undefined,
 
     followUps: followUpsNormalized.length ? followUpsNormalized : undefined,
 
@@ -276,10 +274,6 @@ export function saveSessions(sessions: Session[]) {
   localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
 }
 
-/**
- * Default new sessions to CURRENT.
- * This matches product direction: you start in Current, then end meeting to Past.
- */
 export function createSession(): Session {
   const now = Date.now();
   return {
@@ -310,17 +304,12 @@ export function deleteSession(sessions: Session[], sessionId: string): Session[]
   return sessions.filter((s) => s.id !== sessionId);
 }
 
-export function moveSessionToFolder(
-  sessions: Session[],
-  sessionId: string,
-  folderId: string | null
-): Session[] {
+export function moveSessionToFolder(sessions: Session[], sessionId: string, folderId: string | null): Session[] {
   return sessions.map((s) => (s.id === sessionId ? { ...s, folderId, updatedAt: Date.now() } : s));
 }
 
 /**
  * Helper: Create a new Follow-Up object and attach it to a session.
- * (You can call this from page.tsx when the user clicks "New Follow-Up".)
  */
 export function addFollowUpToSession(session: Session, patch?: Partial<FollowUpData>): Session {
   const now = Date.now();
@@ -329,10 +318,14 @@ export function addFollowUpToSession(session: Session, patch?: Partial<FollowUpD
   const next: FollowUpData = {
     ...base,
     ...patch,
-    // ensure timestamps exist and update updatedAt
     createdAt: patch?.createdAt ?? base.createdAt,
     updatedAt: now,
     highlights: patch?.highlights ? normalizeHighlights(patch.highlights) : base.highlights,
+
+    emailDraft: patch?.emailDraft ?? base.emailDraft,
+    status: patch?.status ?? base.status,
+    closedAt: typeof patch?.closedAt === "number" ? patch.closedAt : base.closedAt,
+    outcomeNotes: patch?.outcomeNotes ?? base.outcomeNotes,
   };
 
   const list = Array.isArray(session.followUps) ? session.followUps : [];
@@ -349,13 +342,31 @@ export function addFollowUpToSession(session: Session, patch?: Partial<FollowUpD
 export function updateFollowUpInSession(session: Session, followUpId: string, patch: Partial<FollowUpData>): Session {
   const now = Date.now();
   const list = Array.isArray(session.followUps) ? session.followUps : [];
+
   const nextList = list.map((fu) => {
     if (fu.id !== followUpId) return fu;
+
+    const statusRaw = patch.status ?? fu.status ?? "open";
+    const status: FollowUpStatus = statusRaw === "closed" ? "closed" : "open";
+
+    const closedAt =
+      status === "closed"
+        ? typeof patch.closedAt === "number"
+          ? patch.closedAt
+          : typeof fu.closedAt === "number"
+            ? fu.closedAt
+            : now
+        : undefined;
+
     return {
       ...fu,
       ...patch,
       updatedAt: now,
       highlights: patch?.highlights ? normalizeHighlights(patch.highlights) : fu.highlights,
+      emailDraft: typeof patch.emailDraft === "string" ? patch.emailDraft : fu.emailDraft ?? "",
+      status,
+      closedAt,
+      outcomeNotes: typeof patch.outcomeNotes === "string" ? patch.outcomeNotes : fu.outcomeNotes ?? "",
     };
   });
 
@@ -406,6 +417,5 @@ export function sortSessions(sessions: Session[], sortMode: SortMode): Session[]
     return copy.sort((a, b) => a.title.localeCompare(b.title));
   }
 
-  // default: most recently updated first
   return copy.sort((a, b) => b.updatedAt - a.updatedAt);
 }

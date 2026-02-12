@@ -15,6 +15,8 @@ import type { ContextStats } from "@/lib/ai/tasks";
 
 type Mode = "current" | "past";
 
+/* -------------------- tiny validators -------------------- */
+
 function asMode(x: unknown): Mode {
   return x === "current" || x === "past" ? x : "past";
 }
@@ -32,13 +34,35 @@ function asAddOns(x: unknown): AddOns {
   };
 }
 
-function buildMergedNotes(rawNotes: string, postMeetingNotes: string) {
-  const raw = rawNotes.trim();
-  const post = postMeetingNotes.trim();
+function cleanStr(x: unknown) {
+  return String(x ?? "").trim();
+}
 
-  if (!post) return raw;
+/* -------------------- merge helpers -------------------- */
 
-  return [raw, "", "## Post-Meeting Notes", post].join("\n");
+function buildMergedNotes(params: {
+  rawNotes: string;
+  postMeetingNotes: string;
+  meetingOutcome: string;
+}) {
+  const raw = params.rawNotes.trim();
+  const post = params.postMeetingNotes.trim();
+  const outcome = params.meetingOutcome.trim();
+
+  const parts: string[] = [];
+
+  if (raw) parts.push(raw);
+
+  if (post) {
+    parts.push("", "## Post-Meeting Notes", post);
+  }
+
+  // IMPORTANT: This is what makes “Incorporate Into Outputs” actually change the results.
+  if (outcome) {
+    parts.push("", "## Meeting Outcome", outcome);
+  }
+
+  return parts.join("\n");
 }
 
 function buildContextStats(rawNotes: string, mergedNotes: string): ContextStats {
@@ -48,6 +72,8 @@ function buildContextStats(rawNotes: string, mergedNotes: string): ContextStats 
   };
 }
 
+/* -------------------- route -------------------- */
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
@@ -55,15 +81,29 @@ export async function POST(req: Request) {
     const tier: Tier = asTier(body?.tier);
     const addOns: AddOns = asAddOns(body?.addOns);
 
-    const rawNotes = String(body?.rawNotes ?? "");
-    const postMeetingNotes = String(body?.postMeetingNotes ?? "");
+    const rawNotes = cleanStr(body?.rawNotes);
+    const postMeetingNotes = cleanStr(body?.postMeetingNotes);
+    const meetingOutcome = cleanStr(body?.meetingOutcome);
+
     const mode: Mode = asMode(body?.mode);
 
-    if (!rawNotes.trim() && !postMeetingNotes.trim()) {
-      return NextResponse.json({ ok: false, error: "Missing rawNotes" }, { status: 400 });
+    if (!rawNotes && !postMeetingNotes && !meetingOutcome) {
+      return NextResponse.json(
+        { ok: false, error: "Missing input: provide rawNotes, postMeetingNotes, or meetingOutcome." },
+        { status: 400 }
+      );
     }
 
-    const merged = buildMergedNotes(rawNotes, postMeetingNotes);
+    // Simple safety guard so someone can’t paste a novel and freeze the app.
+    const merged = buildMergedNotes({ rawNotes, postMeetingNotes, meetingOutcome });
+    const MAX_MERGED_CHARS = 50_000;
+    if (merged.length > MAX_MERGED_CHARS) {
+      return NextResponse.json(
+        { ok: false, error: `Notes too large (${merged.length} chars). Please shorten and try again.` },
+        { status: 413 }
+      );
+    }
+
     const stats = buildContextStats(rawNotes, merged);
 
     // Phase 1: deterministic parsing (AI not integrated yet)
