@@ -62,16 +62,35 @@ function includesWord(haystackLower: string, wordLower: string): boolean {
 export function parseBullets(rawNotes: string): string[] {
   const lines = normalizeLines(rawNotes);
 
-  // Treat any line as a "bullet" for now. (Later: timestamps + quick marks)
-  return lines.map((l) => {
-    // Strip leading bullet markers like "-", "*", "•", "1.", "1)", etc.
-    return l.replace(/^(\*|-|•|\d+[.)])\s+/, "").trim();
-  });
+  const cleaned: string[] = [];
+  let currentSection: "main" | "post" = "main";
+
+  for (const raw of lines) {
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+
+    // Detect post-meeting heading explicitly
+    if (/^##\s*post[- ]?meeting/i.test(trimmed)) {
+      currentSection = "post";
+      cleaned.push("___POST_MEETING_SECTION___");
+      continue;
+    }
+
+    const line = trimmed.replace(/^(\*|-|\d+[.)])\s+/, "").trim();
+    if (!line) continue;
+
+    cleaned.push(line);
+  }
+
+  return cleaned;
 }
 
 // Very simple placeholder extraction: find lines that look like actions
 export function parseActionItems(bullets: string[]): ActionItem[] {
   // Phrase-based verbs can use includes; single-word verbs should use word boundaries.
+  const filtered = bullets.filter(
+  (b) => b !== "___POST_MEETING_SECTION___" && !/^#{1,6}\s+/.test(b)
+);
   const phraseVerbs = ["follow up", "touch base"]; // keep as phrases
   const singleWordVerbs = [
     "send",
@@ -272,19 +291,41 @@ export function formatActionItems(
 }
 
 export function makeSummary(bullets: string[]): string {
-  if (!bullets.length) return "No notes provided.";
+  const out: string[] = [];
+  let inPost = false;
 
-  const top = bullets.slice(0, 6);
-  const restCount = Math.max(0, bullets.length - top.length);
-
-  const lines: string[] = [];
-  lines.push("Summary\n");
-  for (const b of top) lines.push(`- ${b}`);
-  if (restCount) {
-    lines.push(`\n(${restCount} additional note${restCount === 1 ? "" : "s"})`);
+  function pushHeading(title: string) {
+    if (out.length && out[out.length - 1] !== "") out.push("");
+    out.push(title);
+    out.push("-".repeat(Math.min(24, Math.max(8, title.length))));
   }
 
-  return lines.join("\n");
+  for (const b of bullets) {
+    if (b === "___POST_MEETING_SECTION___") {
+      inPost = true;
+      pushHeading("Post-Meeting Notes");
+      continue;
+    }
+
+    // If any markdown heading slips through (ex: "## Meeting Outcome"), render it cleanly.
+    const mdHeading = b.match(/^#{1,6}\s+(.*)$/);
+    if (mdHeading) {
+      const title = mdHeading[1].trim();
+      if (title) pushHeading(title);
+      continue;
+    }
+
+    // Normal summary bullets (pre post-meeting)
+    if (!inPost) {
+      out.push(`- ${b}`);
+      continue;
+    }
+
+    // Post-meeting lines: plain text (no dash)
+    if (b.trim()) out.push(b.trim());
+  }
+
+  return out.join("\n");
 }
 
 /**
